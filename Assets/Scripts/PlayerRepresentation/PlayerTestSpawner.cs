@@ -6,7 +6,7 @@ public class PlayerTestSpawner : MonoBehaviour
     [Min(1)] public int numberOfPlayers = 3;
     public float spawnSpacing = 4f;
 
-    [Header("Optional Avatar")]
+    [Header("Full-Body Avatar (Optional)")]
     public GameObject avatarPrefab;
 
     private void Start()
@@ -15,57 +15,98 @@ public class PlayerTestSpawner : MonoBehaviour
         {
             int id = i + 1;
 
-            Vector3 position = transform.position +
-                new Vector3(i * spawnSpacing, 0f, 0f);
-
             GameObject player = new GameObject("TestPlayer_" + id);
-            player.transform.position = position;
-
-            if (avatarPrefab != null)
-            {
-                Instantiate(avatarPrefab, player.transform);
-            }
-            else
-            {
-                CreatePart(
-                    player.transform, "VisualPlaceholder",
-                    PrimitiveType.Capsule,
-                    new Vector3(0f, 0.95f, 0f),
-                    new Vector3(0.65f, 0.65f, 0.65f),
-                    Color.HSVToRGB((i * 0.23f) % 1f, 0.7f, 0.9f)
-                );
-            }
-
-            // Temporary tracking markers for testing.
-            Transform head = CreatePart(
-                player.transform, "Head",
-                PrimitiveType.Sphere,
-                new Vector3(0f, 1.65f, 0f),
-                Vector3.one * 0.24f,
-                Color.yellow
-            );
-
-            Transform leftHand = CreatePart(
-                player.transform, "LeftHand",
-                PrimitiveType.Sphere,
-                new Vector3(-0.35f, 1.15f, 0.35f),
-                Vector3.one * 0.16f,
-                Color.cyan
-            );
-
-            Transform rightHand = CreatePart(
-                player.transform, "RightHand",
-                PrimitiveType.Sphere,
-                new Vector3(0.35f, 1.15f, 0.35f),
-                Vector3.one * 0.16f,
-                Color.magenta
-            );
+            player.transform.position =
+                transform.position + Vector3.right * (i * spawnSpacing);
 
             PlayerIdentity identity =
                 player.AddComponent<PlayerIdentity>();
 
             AvatarPoseDriver driver =
                 player.AddComponent<AvatarPoseDriver>();
+
+            Transform head;
+            Transform leftHand;
+            Transform rightHand;
+
+            if (avatarPrefab != null)
+            {
+                GameObject model =
+                    Instantiate(avatarPrefab, player.transform);
+
+                model.transform.localPosition = Vector3.zero;
+                model.transform.localRotation = Quaternion.identity;
+                model.transform.localScale = Vector3.one;
+
+                ScoutAvatar avatar =
+                    model.GetComponentInChildren<ScoutAvatar>(true);
+
+                if (avatar == null ||
+                    avatar.head == null ||
+                    avatar.leftHand == null ||
+                    avatar.rightHand == null)
+                {
+                    Debug.LogError(
+                        "Avatar prefab needs a ScoutAvatar with head and hand references.",
+                        model
+                    );
+
+                    Destroy(player);
+                    continue;
+                }
+
+                // The simulated player uses AvatarPoseDriver,
+                // not the real local player's XR tracking.
+                foreach (ScoutLocalRigBinding binding in
+                         model.GetComponentsInChildren<ScoutLocalRigBinding>(true))
+                {
+                    binding.enabled = false;
+                }
+
+                // Show the complete body to observer cameras.
+                avatar.localCamera = null;
+
+                head = avatar.head;
+                leftHand = avatar.leftHand;
+                rightHand = avatar.rightHand;
+            }
+            else
+            {
+                // Original placeholder mode remains available.
+                CreatePart(
+                    player.transform, "Body",
+                    PrimitiveType.Capsule,
+                    new Vector3(0, .95f, 0),
+                    Vector3.one * .65f,
+                    Color.HSVToRGB(i * .23f % 1f, .7f, .9f)
+                );
+
+                head = CreatePart(
+                    player.transform, "Head",
+                    PrimitiveType.Sphere,
+                    new Vector3(0, 1.65f, 0),
+                    Vector3.one * .24f,
+                    Color.yellow
+                );
+
+                leftHand = CreatePart(
+                    player.transform, "LeftHand",
+                    PrimitiveType.Sphere,
+                    new Vector3(-.35f, 1.15f, .35f),
+                    Vector3.one * .16f,
+                    Color.cyan
+                );
+
+                rightHand = CreatePart(
+                    player.transform, "RightHand",
+                    PrimitiveType.Sphere,
+                    new Vector3(.35f, 1.15f, .35f),
+                    Vector3.one * .16f,
+                    Color.magenta
+                );
+            }
+
+            driver.SetPoseTargets(head, leftHand, rightHand);
 
             SimulatedPlayerMovement movement =
                 player.AddComponent<SimulatedPlayerMovement>();
@@ -74,35 +115,33 @@ public class PlayerTestSpawner : MonoBehaviour
                 player.AddComponent<SimulatedTrackedPose>();
 
             identity.Initialize(id, "Player " + id);
-            driver.SetPoseTargets(head, leftHand, rightHand);
-
             movement.Initialize(id);
             tracking.Initialize(id);
         }
     }
 
-    private Transform CreatePart(
+    private static Transform CreatePart(
         Transform parent,
-        string partName,
-        PrimitiveType primitive,
-        Vector3 localPosition,
-        Vector3 localScale,
+        string name,
+        PrimitiveType type,
+        Vector3 position,
+        Vector3 scale,
         Color color)
     {
-        GameObject part = GameObject.CreatePrimitive(primitive);
-        part.name = partName;
+        GameObject obj = GameObject.CreatePrimitive(type);
 
-        part.transform.SetParent(parent, false);
-        part.transform.localPosition = localPosition;
-        part.transform.localScale = localScale;
+        obj.name = name;
+        obj.transform.SetParent(parent, false);
+        obj.transform.localPosition = position;
+        obj.transform.localScale = scale;
 
-        Collider collider = part.GetComponent<Collider>();
+        Collider collider = obj.GetComponent<Collider>();
         if (collider != null)
-            Destroy(collider);
+            Object.Destroy(collider);
 
-        Renderer partRenderer = part.GetComponent<Renderer>();
-        partRenderer.material.color = color;
+        Renderer renderer = obj.GetComponent<Renderer>();
+        renderer.material.color = color;
 
-        return part.transform;
+        return obj.transform;
     }
 }
