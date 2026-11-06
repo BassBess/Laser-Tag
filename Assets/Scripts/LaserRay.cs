@@ -29,8 +29,12 @@ public class LaserRay : MonoBehaviour
     [Tooltip("How far the laser reaches, in meters, if it doesn't hit anything.")]
     public float maxDistance = 50f;
 
-    [Tooltip("Which layers the laser can hit. Untick your own player's layer so you can't shoot yourself.")]
+    [Tooltip("Which layers the laser can hit.")]
     public LayerMask hitLayers = ~0;
+
+    [Tooltip("The shooter's own player. The laser ignores every collider under it, so you can't shoot yourself. " +
+             "Leave empty to use the top object above this gun (e.g. XR Origin (VR)).")]
+    public Transform owner;
 
     [Header("Look")]
     [Tooltip("Color of the soft outer glow.")]
@@ -93,6 +97,9 @@ public class LaserRay : MonoBehaviour
             muzzle = transform;
         }
 
+        if (owner == null)
+            owner = transform.root;
+
         CreateTextures();
 
         // Outer glow: the LineRenderer already on this object
@@ -140,14 +147,35 @@ public class LaserRay : MonoBehaviour
         DrawBeam();
     }
 
-    /// <summary>Shoots an invisible ray from the muzzle and remembers where it stops.</summary>
+    static readonly RaycastHit[] rayHits = new RaycastHit[32];
+
+    /// <summary>
+    /// Shoots an invisible ray from the muzzle and remembers the first collider it reaches,
+    /// skipping colliders that belong to the shooter's own player.
+    /// </summary>
     void CastRay()
     {
         Vector3 origin = muzzle.position;
         Vector3 direction = muzzle.forward;
 
-        hasHit = Physics.Raycast(origin, direction, out currentHit, maxDistance,
-                                 hitLayers, QueryTriggerInteraction.Ignore);
+        int count = Physics.RaycastNonAlloc(origin, direction, rayHits, maxDistance,
+                                            hitLayers, QueryTriggerInteraction.Ignore);
+
+        hasHit = false;
+        float closest = float.MaxValue;
+        for (int i = 0; i < count; i++)
+        {
+            RaycastHit hit = rayHits[i];
+            if (owner != null && hit.collider.transform.IsChildOf(owner))
+                continue; // our own body or gun: the laser passes through it
+
+            if (hit.distance < closest)
+            {
+                closest = hit.distance;
+                currentHit = hit;
+                hasHit = true;
+            }
+        }
 
         rayEnd = hasHit ? currentHit.point : origin + direction * maxDistance;
     }
@@ -157,11 +185,23 @@ public class LaserRay : MonoBehaviour
         shotTimer = shotDuration;
         nextShotTime = Time.time + cooldown;
 
-        if (hasHit)
+        if (!hasHit)
+            return; // the beam reached maxDistance without touching any collider
+
+        // The ray reached a collider. Does it belong to a player?
+        PlayerHitboxes victim = currentHit.collider.GetComponentInParent<PlayerHitboxes>();
+        if (victim != null && victim.TryGetPart(currentHit.collider, out HitboxPart part))
         {
-            Debug.Log($"{name} hit {currentHit.collider.name} at {currentHit.distance:F2} m", currentHit.collider);
-            onHit?.Invoke(currentHit);
+            victim.ReportHit(this, part, currentHit);
         }
+        else
+        {
+            // A wall, a crate, the floor...: the shot is blocked and nobody is hit.
+            Debug.Log($"{name} shot blocked by {currentHit.collider.name} at {currentHit.distance:F2} m",
+                      currentHit.collider);
+        }
+
+        onHit?.Invoke(currentHit);
     }
 
     void DrawBeam()

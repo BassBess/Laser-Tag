@@ -7862,6 +7862,7 @@ GameObject:
   - component: {fileID: 2831936400549427491}
   - component: {fileID: 9178270196051085322}
   - component: {fileID: 6160431318246988575}
+  - component: {fileID: 1112916547279960111}
   m_Layer: 0
   m_Name: PlayerAvatar
   m_TagString: Untagged
@@ -8025,6 +8026,25 @@ MonoBehaviour:
   verticalResetDistance: 0.45
   settlingDepth: 0.003
   settlingDuration: 0.38
+--- !u!114 &1112916547279960111
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 6699294670745217782}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a24481593782f664e89cf17cf5089b87, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::PlayerHitboxes
+  head: {fileID: 0}
+  headRadius: 0.16
+  headCenter: {x: 0, y: 0, z: 0}
+  bodyRadius: 0.22
+  bodyHeight: 1.45
+  bodyBottom: 0.05
+  hitboxLayer: PlayerHitbox
 --- !u!1 &6750041362513015188
 GameObject:
   m_ObjectHideFlags: 0
