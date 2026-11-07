@@ -31,6 +31,7 @@ public class ShotBeamFx : MonoBehaviour
         beam.line.SetPosition(1, to);
         beam.gameObject.SetActive(true);
         beam.Apply(1f);
+        LaserTagFeedback.PlayShot(from, 0.45f);
     }
 
     static ShotBeamFx Create()

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Unity.Collections;
 using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.InputSystem;
@@ -42,6 +43,17 @@ public class LaserTagGameManager : NetworkBehaviour
     [Min(0f)] public float startCountdown = 3f;
     [Tooltip("Server-side limit on how fast one player can land hits (anti-spam), in seconds.")]
     [Min(0f)] public float minSecondsBetweenHits = 0.15f;
+
+    [Header("Spawn protection")]
+    [Tooltip("Seconds a player cannot be hit after respawning. Landing a hit yourself ends it early.")]
+    [Min(0f)] public float spawnProtection = 2f;
+
+    [Header("Hit validation (host)")]
+    [Tooltip("The reported gun position must be this close to one of the shooter's hands, in metres.")]
+    [Min(0.1f)] public float gunToHandTolerance = 0.8f;
+    [Tooltip("The reported hit point may be this far from the victim's body on the host (covers network delay), in metres.")]
+    [Min(0.1f)] public float hitPointTolerance = 0.9f;
+    [Min(1f)] public float maxShotRange = 60f;
 
     [Header("References")]
     public SpawnManager spawnManager;
@@ -288,6 +300,7 @@ public class LaserTagGameManager : NetworkBehaviour
     {
         PlaceAtFreeSpawn(p);
         p.Health.Value = p.maxHealth;
+        p.ProtectedUntil.Value = ServerNow + spawnProtection;
         p.LifeState.Value = PlayerLifeState.Alive;
     }
 
@@ -308,7 +321,53 @@ public class LaserTagGameManager : NetworkBehaviour
     // Hits
     // =====================================================================================
 
-    /// <summary>Server: a shooter's laser hit a victim (reported by the shooter's headset).</summary>
+    readonly RaycastHit[] coverHits = new RaycastHit[16];
+
+    /// <summary>
+    /// Server: is a hit reported by a headset believable from the HOST's point of view?
+    ///  1. the shot started at the shooter's gun (near one of their hands),
+    ///  2. it is within range,
+    ///  3. the hit point is on the victim's body as the host sees it (with a small allowance for network delay),
+    ///  4. no wall, prop or other player is between the gun and the hit point (cover blocks shots for everyone).
+    /// </summary>
+    public bool ServerValidateShot(NetworkPlayer shooter, NetworkPlayer victim, Vector3 from, Vector3 point, out string reason)
+    {
+        PoseState pose = shooter.Pose.Value;
+        float toHand = Mathf.Min(Vector3.Distance(from, pose.leftPosition), Vector3.Distance(from, pose.rightPosition));
+        if (toHand > gunToHandTolerance) { reason = $"gun {toHand:F1} m from the shooter's hands"; return false; }
+
+        Vector3 path = point - from;
+        float length = path.magnitude;
+        if (length > maxShotRange) { reason = $"out of range ({length:F0} m)"; return false; }
+
+        Vector3 feet = victim.FeetPosition;
+        float offBody = DistanceToSegment(point, feet + Vector3.up * 0.1f, feet + Vector3.up * 1.9f);
+        if (offBody > hitPointTolerance) { reason = $"hit point {offBody:F1} m away from the victim"; return false; }
+
+        if (length > 0.05f)
+        {
+            int count = Physics.RaycastNonAlloc(from, path / length, coverHits, length - 0.05f, Physics.AllLayers,
+                QueryTriggerInteraction.Ignore);
+            for (int i = 0; i < count; i++)
+            {
+                Transform t = coverHits[i].collider != null ? coverHits[i].collider.transform : null;
+                if (t == null || t.IsChildOf(shooter.transform) || t.IsChildOf(victim.transform)) continue;
+                reason = "blocked by " + t.name;
+                return false;
+            }
+        }
+        reason = null;
+        return true;
+    }
+
+    static float DistanceToSegment(Vector3 p, Vector3 a, Vector3 b)
+    {
+        Vector3 ab = b - a;
+        float t = Mathf.Clamp01(Vector3.Dot(p - a, ab) / Mathf.Max(ab.sqrMagnitude, 1e-6f));
+        return Vector3.Distance(p, a + ab * t);
+    }
+
+    /// <summary>Server: apply a validated hit (from <see cref="ServerValidateShot"/> or a server-controlled player).</summary>
     public void ServerHandleHit(NetworkPlayer shooter, NetworkPlayer victim)
     {
         if (!IsServer || shooter == null || victim == null || shooter == victim) return;
@@ -317,6 +376,8 @@ public class LaserTagGameManager : NetworkBehaviour
         if (!shooter.IsAlive || !victim.IsAlive) return;
         if (Time.time - shooter.serverLastHitTime < minSecondsBetweenHits) return;
         shooter.serverLastHitTime = Time.time;
+        shooter.ProtectedUntil.Value = 0; // attacking ends your own spawn protection
+        if (ServerNow < victim.ProtectedUntil.Value) return;
 
         shooter.Hits.Value++;
         int health = Mathf.Max(0, victim.Health.Value - victim.damagePerHit);
@@ -334,6 +395,7 @@ public class LaserTagGameManager : NetworkBehaviour
         {
             victim.RespawnAt.Value = ServerNow + respawnDelay;
             victim.LifeState.Value = PlayerLifeState.Respawning;
+            KillFeedRpc(ShortName(shooter), ShortName(victim), false);
         }
         else
         {
@@ -341,8 +403,19 @@ public class LaserTagGameManager : NetworkBehaviour
             victim.serverEliminatedAt = ServerNow;
             // Placement = number of players still in, plus one. E.g. first out of 4 places 4th.
             victim.Placement.Value = PlayersLeft + 1;
+            KillFeedRpc(ShortName(shooter), ShortName(victim), true);
             ServerCheckRoundOver();
         }
+    }
+
+    static FixedString32Bytes ShortName(NetworkPlayer p) => new FixedString32Bytes(p != null ? p.Name : "?");
+
+    /// <summary>"Shooter ▸ Victim" line at the top of every player's view.</summary>
+    [Rpc(SendTo.Everyone)]
+    void KillFeedRpc(FixedString32Bytes shooter, FixedString32Bytes victim, bool eliminated)
+    {
+        if (PlayerHud.Instance != null)
+            PlayerHud.Instance.AddKillFeed(shooter.ToString(), victim.ToString(), eliminated);
     }
 
     // =====================================================================================
@@ -352,6 +425,11 @@ public class LaserTagGameManager : NetworkBehaviour
     public void ServerOnPlayerJoined(NetworkPlayer p)
     {
         if (!IsServer || !IsSpawned || p == null) return;
+        if (!p.serverAnnounced)
+        {
+            p.serverAnnounced = true;
+            SystemMessageRpc(new FixedString64Bytes(p.Name + " joined"));
+        }
         p.Health.Value = p.maxHealth;
         p.Placement.Value = 0;
         if (Phase.Value == GamePhase.Lobby)
@@ -371,6 +449,17 @@ public class LaserTagGameManager : NetworkBehaviour
 
     public void ServerOnPlayerLeft(NetworkPlayer p)
     {
-        // The round-over check runs every tick while Playing, so nothing else to do here.
+        // A headset disconnected (or quit). Its player object is removed for everyone; the round-over check
+        // runs every tick, so if only one player is left the round ends normally. Tell everybody.
+        if (!IsServer || !IsSpawned || NetworkManager == null || NetworkManager.ShutdownInProgress) return;
+        bool midRound = Phase.Value == GamePhase.Playing && p.InRound.Value && p.LifeState.Value != PlayerLifeState.Eliminated;
+        SystemMessageRpc(new FixedString64Bytes(p.Name + (midRound ? " disconnected - out of the round" : " left")));
+    }
+
+    /// <summary>Grey info line in everyone's feed (joins, disconnects).</summary>
+    [Rpc(SendTo.Everyone)]
+    void SystemMessageRpc(FixedString64Bytes message)
+    {
+        if (PlayerHud.Instance != null) PlayerHud.Instance.AddSystemMessage(message.ToString());
     }
 }

@@ -14,8 +14,8 @@ public class SpawnManager : MonoBehaviour
 {
     public static SpawnManager Instance { get; private set; }
 
-    [Tooltip("Spawn points to choose from. Leave empty to use every SpawnPoint in the children.")]
-    public List<SpawnPoint> spawnPoints = new List<SpawnPoint>();
+    [Tooltip("Spawn points to choose from. Leave empty to use every LaserTagSpawnPoint in the children.")]
+    public List<LaserTagSpawnPoint> spawnPoints = new List<LaserTagSpawnPoint>();
 
     [Tooltip("Teleport area whose floors are used when every spawn point is occupied.")]
     public SafeTeleportationArea fallbackArea;
@@ -53,7 +53,7 @@ public class SpawnManager : MonoBehaviour
         Shuffle(order);
         foreach (int i in order)
         {
-            SpawnPoint point = spawnPoints[i];
+            LaserTagSpawnPoint point = spawnPoints[i];
             if (point != null && IsFree(point.transform.position, player, reserved))
             {
                 yaw = point.Yaw;
@@ -84,7 +84,7 @@ public class SpawnManager : MonoBehaviour
         yaw = 0f;
         Vector3 best = transform.position;
         float bestScore = float.NegativeInfinity;
-        foreach (SpawnPoint point in spawnPoints)
+        foreach (LaserTagSpawnPoint point in spawnPoints)
         {
             if (point == null) continue;
             float score = DistanceToNearestPlayer(point.transform.position, player, reserved);

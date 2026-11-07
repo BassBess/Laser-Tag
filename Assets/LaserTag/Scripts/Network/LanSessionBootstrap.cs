@@ -1,4 +1,6 @@
+using System;
 using System.Collections;
+using System.IO;
 using Unity.Netcode;
 using Unity.Netcode.Transports.UTP;
 using UnityEngine;
@@ -44,7 +46,7 @@ public class LanSessionBootstrap : MonoBehaviour
     {
         manager = GetComponent<NetworkManager>();
         transport = GetComponent<UnityTransport>();
-        token = System.Guid.NewGuid().ToString("N").Substring(0, 12);
+        token = Guid.NewGuid().ToString("N").Substring(0, 12);
     }
 
     void OnEnable()
@@ -85,12 +87,14 @@ public class LanSessionBootstrap : MonoBehaviour
 
     void OnDestroy()
     {
+        DeleteLocalHeartbeat();
         discovery?.Dispose();
         discovery = null;
     }
 
     void OnApplicationQuit()
     {
+        DeleteLocalHeartbeat();
         discovery?.Dispose();
         discovery = null;
     }
@@ -110,7 +114,7 @@ public class LanSessionBootstrap : MonoBehaviour
     {
         searching = true;
         Status = "Looking for a game on this Wi-Fi...";
-        float until = Time.unscaledTime + searchSeconds + Random.Range(0f, 1.5f);
+        float until = Time.unscaledTime + searchSeconds + UnityEngine.Random.Range(0f, 1.5f);
         while (Time.unscaledTime < until)
         {
             if (TryFindHost(out LanDiscovery.Announcement found))
@@ -127,6 +131,9 @@ public class LanSessionBootstrap : MonoBehaviour
 
     bool TryFindHost(out LanDiscovery.Announcement found)
     {
+        // A game hosted on this same computer (Editor + Multiplayer Play Mode / second build).
+        if (TryReadLocalHeartbeat(out found)) return true;
+
         found = default;
         if (discovery == null) return false;
         bool any = false;
@@ -147,11 +154,58 @@ public class LanSessionBootstrap : MonoBehaviour
         {
             Status = "Hosting - other headsets will join automatically";
             Debug.Log($"Laser Tag: hosting on port {gamePort}.");
+            WriteLocalHeartbeat();
+        }
+        else if (mode == StartMode.AutoLan)
+        {
+            // Usually: another window on this computer is already hosting on the same port. Look again and join it.
+            Status = "Game port busy - looking for the game again...";
+            if (routine != null) StopCoroutine(routine);
+            routine = StartCoroutine(RetryAfterDelay());
         }
         else
         {
             Status = "Could not start the game (is the port in use?)";
         }
+    }
+
+    // ---------- same-computer discovery ----------
+    // Windows often does not deliver UDP broadcasts between two programs on the same PC, so a host also
+    // writes a small heartbeat file in the user's temp folder that other local instances can read.
+
+    static string HeartbeatPath => Path.Combine(Path.GetTempPath(), "LaserTagLocalHost.txt");
+    float nextHeartbeat;
+
+    void WriteLocalHeartbeat()
+    {
+        nextHeartbeat = Time.unscaledTime + 1f;
+        try { File.WriteAllText(HeartbeatPath, token + "|" + gamePort); }
+        catch (Exception) { /* temp folder not writable: LAN broadcast still works */ }
+    }
+
+    bool TryReadLocalHeartbeat(out LanDiscovery.Announcement found)
+    {
+        found = default;
+        try
+        {
+            if (!File.Exists(HeartbeatPath)) return false;
+            if ((DateTime.UtcNow - File.GetLastWriteTimeUtc(HeartbeatPath)).TotalSeconds > 3) return false;
+            string[] parts = File.ReadAllText(HeartbeatPath).Split('|');
+            if (parts.Length < 2 || parts[0] == token || !ushort.TryParse(parts[1], out ushort port)) return false;
+            found = new LanDiscovery.Announcement { address = "127.0.0.1", gamePort = port, token = parts[0], players = 1 };
+            return true;
+        }
+        catch (Exception) { return false; }
+    }
+
+    void DeleteLocalHeartbeat()
+    {
+        try
+        {
+            if (File.Exists(HeartbeatPath) && File.ReadAllText(HeartbeatPath).StartsWith(token))
+                File.Delete(HeartbeatPath);
+        }
+        catch (Exception) { }
     }
 
     void Join(string address, ushort port)
@@ -165,6 +219,7 @@ public class LanSessionBootstrap : MonoBehaviour
 
     void Update()
     {
+        if (manager.IsHost && !restarting && Time.unscaledTime >= nextHeartbeat) WriteLocalHeartbeat();
         if (discovery == null || searching || restarting) return;
 
         if (manager.IsHost)

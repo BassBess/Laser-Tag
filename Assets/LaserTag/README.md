@@ -24,16 +24,25 @@ duplicates). **Regenerate Spawn Points** and **Rebuild Network Player Prefab** r
 | Snap turn | Thumbstick left/right | simulator thumbstick |
 | Start / restart round | **A** on the right controller | **Enter** |
 
+## Starting a game
+
+Press Play (or start the app on the headset). The game connects by itself over the **local Wi-Fi**:
+the first headset hosts, the others find it and join within a few seconds (UDP broadcast on port 47777,
+game on port 7777). All headsets must be on the same network, and the network must allow devices to talk to
+each other. If it does not (some university networks block this), use a phone hotspot or your own router.
+If the host quits, the others look for a game again and one of them becomes the new host.
+
 ## Testing
 
-- **Alone**: select *Game Manager* and set *Min Players To Start* to 1.
-- **Two players on one PC**: make a Windows build and run it next to the Editor, or install the
-  *Multiplayer Play Mode* package (`com.unity.multiplayer.playmode`) to get a second player window.
-  The first instance hosts, the second finds it on the LAN and joins automatically.
-- **Headsets**: all headsets on the **same Wi-Fi**. The first one to start hosts; the others join by
-  themselves (UDP broadcast on port 47777, game on port 7777). If the host quits, the others find a
-  new host. If auto-discovery is blocked on your network, set *Network Manager › Lan Session Bootstrap
-  › Mode* to *Manual* and type the host's IP.
+- **Alone (testing only)**: *Tools › Laser Tag › Testing › Add Practice Bots* adds computer players to
+  the open scene (2 by default). They walk around, shoot back with imperfect aim, can be shot, respawn and
+  get eliminated like players. Press Play, wait for the lobby, then press Enter / A to start a round. *Remove Practice Bots* takes them out again. The bots live only in `Assets/LaserTag/Testing`;
+  the game itself does not use them. Four bots + you is a good stand-in for a 5-player performance test.
+- **Performance on Quest 2**: tick *Local Player › Player Hud › Show Fps* to see frames per second.
+- **Two players on one PC**: Multiplayer Play Mode (*Window › Multiplayer › Multiplayer Play Mode*, tick Player 2),
+  or a second build. They find each other automatically.
+- **Headsets**: build to every Quest (File › Build Profiles › Android › Build And Run), put them on the same
+  Wi-Fi and start the app on each.
 
 ## What was built (by requirement)
 
@@ -53,10 +62,15 @@ duplicates). **Regenerate Spawn Points** and **Rebuild Network Player Prefab** r
 
 ### 2. Health / ammo (HUD = `PlayerHud`, built in code, head-locked, drawn over walls)
 - **Health bar** top-left, 100 HP, −10 per hit (`NetworkPlayer › Damage Per Hit`). 0 HP = tagged out.
-- **Shots** top-right: 100 shots shared by both guns. 1.5 s after the last shot they refill at
-  12/s until full (`Local Player › Recharge Delay / Recharge Per Second`). Shows *RECHARGING*, and blinks
-  when you pull the trigger on empty.
-- **Respawn**: 3 s countdown on screen, then you reappear at a random free spawn point.
+- **Shots** top-right (`87 / 100` energy cell): 100 shots shared by both guns. 2 s after the last shot
+  they refill at 8/s until full (`Local Player › Refill Delay / Refill Per Second`). Orange *LOW* under 25,
+  red blinking *EMPTY* at 0, *RECHARGING* while refilling. Empty trigger = dry click + vibration.
+- **Feel**: laser sound on every shot (you hear other players' shots from their guns), controller
+  vibration on shots and when hit, a hit marker + ping when your laser hits someone, and *TAGGED <name>*
+  when your shot takes them out.
+- **Respawn**: 3 s countdown on screen, then you reappear at a random free spawn point with 2 s of
+  **spawn protection** (blue glow, cannot be hit; landing a hit ends it early).
+- **Kill feed** at the top of the view: `Player 1 > Bot 2`, `ELIMINATED` when it was their last life.
 - **Hit feedback**: your view flashes red; everyone else sees your avatar light up red.
 
 ### 3. Game logic (`LaserTagGameManager`, server-authoritative)
@@ -79,8 +93,10 @@ duplicates). **Regenerate Spawn Points** and **Rebuild Network Player Prefab** r
 ### 5. Shooting
 - The existing `LaserRay` draws the beam from your gun to the target and detects the collider hit.
   Other players see a beam from your gun too.
-- Hitting another avatar's collider sends the hit to the host, which checks the round is running and
-  both players are alive, then applies damage.
+- Hitting another avatar's collider sends a *hit claim* (gun position + hit point) to the host. The host
+  decides: the gun must be at the shooter's hand, the target in range, the hit point on the victim's body as
+  the host sees it (0.9 m allowance for network delay), and **no wall, prop or other player between gun and
+  hit point**. Rejected claims are logged in the host's Console with the reason.
 - **Spawning** never uses an occupied point: the spawn manager checks the same sphere clearance and keeps
   2 m from other players and from points handed out in the same moment; if every point is busy it tries
   random spots on the floor.
@@ -93,17 +109,22 @@ duplicates). **Regenerate Spawn Points** and **Rebuild Network Player Prefab** r
 | `Network/LanSessionBootstrap.cs`, `LanDiscovery.cs` | Auto host/join on the local network |
 | `Game/LaserTagGameManager.cs` | Lobby, countdown, damage, lives, respawn, elimination, ranking, restart |
 | `Game/LocalPlayerRig.cs` | Ammo, fire gate, hit reporting, pose capture, teleport on spawn |
-| `Game/SpawnManager.cs`, `SpawnPoint.cs` | Free spawn point selection |
+| `Game/SpawnManager.cs`, `LaserTagSpawnPoint.cs` | Free spawn point selection |
 | `Environment/SafeTeleportationArea.cs`, `SafeTeleportationAnchor.cs`, `TeleportClearance.cs` | Sphere-checked teleport |
 | `Environment/TeleportRayVisibility.cs`, `GunOnlyControllerVisuals.cs` | Rig visuals |
 | `UI/PlayerHud.cs` | Health, shots, messages, red flash, scoreboard |
 | `FX/ShotBeamFx.cs` | Other players' shot beams |
 | `Editor/LaserTagSceneBuilder.cs` | The Tools › Laser Tag › Part 2 menu |
 | `Editor/LaserTagAndroidManifest.cs` | Adds the Wi-Fi multicast permission LAN discovery needs on Quest |
+| `Testing/` (optional) | Practice bots for testing alone: `PracticeBotSpawner`, `LaserTagBot`, add/remove menu |
 
 `Assets/Scripts/LaserRay.cs` got two small hooks: `canFire` (ammo/alive gate) and `onFired`.
 
 ## Known limitations
-- Hits are detected by the shooter's headset and validated by the host (fine for a LAN class project,
-  not cheat-proof).
-- The host is one of the players; if the host quits, the round ends and the others regroup.
+- The host is one of the players (listen server). If the host quits, the round ends; the others reconnect to a
+  new host automatically but the match state is not migrated.
+- Local Wi-Fi only: the network must allow device-to-device traffic (bring a hotspot/router if it does not).
+- Hit claims are checked on the host but the first raycast happens on the shooter's headset, so a modified
+  client could still claim hits it had line of sight for.
+
+See `Documentation/` in the repository root for the technical report, setup/join guide and script guide.

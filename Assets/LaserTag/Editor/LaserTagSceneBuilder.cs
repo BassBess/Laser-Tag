@@ -57,7 +57,9 @@ public static class LaserTagSceneBuilder
     const float SpawnSpacing = 3f;
     const int MaxSpawnPoints = 16;
 
-    static readonly string[] FloorKeywords = { "floor", "plane", "ground" };
+    // Only the arena's own floor tiles. The big desert "Plane" around the building is NOT a floor, otherwise
+    // players could spawn or teleport outside the arena.
+    static readonly string[] FloorKeywords = { "floor" };
     static readonly string[] NotFloorKeywords = { "stair", "ornament", "lattice_only" };
 
     // =====================================================================================
@@ -132,7 +134,7 @@ public static class LaserTagSceneBuilder
             EditorUtility.DisplayDialog("Laser Tag", "Run Build Game Scene / Apply To Open Scene first.", "OK");
             return;
         }
-        foreach (SpawnPoint p in spawns.GetComponentsInChildren<SpawnPoint>(true)) Undo.DestroyObjectImmediate(p.gameObject);
+        foreach (LaserTagSpawnPoint p in spawns.GetComponentsInChildren<LaserTagSpawnPoint>(true)) Undo.DestroyObjectImmediate(p.gameObject);
         var report = new StringBuilder();
         CreateSpawnPoints(spawns, area, FindRig(), report);
         EditorSceneManager.MarkSceneDirty(spawns.gameObject.scene);
@@ -197,7 +199,7 @@ public static class LaserTagSceneBuilder
         report.AppendLine("• Network player prefab: " + PlayerPrefabPath);
         SetupNetworkManager(setupRoot.transform, playerPrefab, report);
         SpawnManager spawns = SetupGameManager(setupRoot.transform, area, report);
-        if (spawns.GetComponentsInChildren<SpawnPoint>(true).Length == 0)
+        if (spawns.GetComponentsInChildren<LaserTagSpawnPoint>(true).Length == 0)
             CreateSpawnPoints(spawns, area, rig, report);
         else
             report.AppendLine("• Spawn points: kept the existing ones");
@@ -662,7 +664,7 @@ public static class LaserTagSceneBuilder
         local.guns = guns;
         GetOrAdd<PlayerHud>(local.gameObject).targetCamera = rig.Camera;
         EditorUtility.SetDirty(local);
-        report.AppendLine($"• Local player: {local.maxAmmo} shots, refill after {local.rechargeDelay} s at {local.rechargePerSecond}/s; HUD");
+        report.AppendLine($"• Local player: {local.maxAmmo} shots, refill after {local.refillDelay} s at {local.refillPerSecond}/s; HUD");
     }
 
     static void SetupNetworkManager(Transform setupRoot, GameObject playerPrefab, StringBuilder report)
@@ -742,7 +744,7 @@ public static class LaserTagSceneBuilder
 
         if (candidates.Count == 0)
         {
-            report.AppendLine("  ! No free floor found for spawn points. Add SpawnPoint objects under Laser Tag/Spawn Points by hand.");
+            report.AppendLine("  ! No free floor found for spawn points. Add LaserTagSpawnPoint objects under Laser Tag/Spawn Points by hand.");
             return;
         }
 
@@ -770,9 +772,9 @@ public static class LaserTagSceneBuilder
             Vector3 look = Vector3.ProjectOnPlane(centroid - chosen[i], Vector3.up);
             go.transform.SetPositionAndRotation(chosen[i],
                 look.sqrMagnitude > 0.01f ? Quaternion.LookRotation(look, Vector3.up) : Quaternion.identity);
-            go.AddComponent<SpawnPoint>();
+            go.AddComponent<LaserTagSpawnPoint>();
         }
-        spawns.spawnPoints = spawns.GetComponentsInChildren<SpawnPoint>(true).ToList();
+        spawns.spawnPoints = spawns.GetComponentsInChildren<LaserTagSpawnPoint>(true).ToList();
         EditorUtility.SetDirty(spawns);
         report.AppendLine($"• Spawn points: {chosen.Count} generated at least {SpawnSpacing} m apart (move/add them freely)");
     }

@@ -4,7 +4,7 @@ using UnityEngine;
 /// A predetermined place where a player can start a round or respawn. Its blue (Z) arrow is the direction
 /// the player faces after spawning. The <see cref="SpawnManager"/> skips points that are occupied.
 /// </summary>
-public class SpawnPoint : MonoBehaviour
+public class LaserTagSpawnPoint : MonoBehaviour
 {
     public float Yaw => transform.eulerAngles.y;
 

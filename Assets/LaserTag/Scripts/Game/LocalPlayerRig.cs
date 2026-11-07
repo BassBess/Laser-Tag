@@ -5,8 +5,8 @@ using UnityEngine.XR.Interaction.Toolkit.Locomotion.Teleportation;
 /// <summary>
 /// The player wearing THIS headset: XR rig, camera, local avatar and guns.
 ///
-/// - Ammunition: <see cref="maxAmmo"/> shots shared by both guns. After <see cref="rechargeDelay"/> seconds
-///   without shooting, shots refill at <see cref="rechargePerSecond"/> until full.
+/// - Ammunition: <see cref="maxAmmo"/> shots shared by both guns. After <see cref="refillDelay"/> seconds
+///   without shooting, shots refill at <see cref="refillPerSecond"/> until full.
 /// - Fire gate: guns only fire with ammo, while alive and outside the start countdown.
 /// - Hits: when a laser hits another player's avatar, the server is asked to apply damage.
 /// - Pose: provides the pose that <see cref="NetworkPlayer"/> sends to the others.
@@ -32,18 +32,32 @@ public class LocalPlayerRig : MonoBehaviour
     [Header("Ammunition")]
     [Min(1)] public int maxAmmo = 100;
     [Tooltip("Seconds without shooting before shots start to refill.")]
-    [Min(0f)] public float rechargeDelay = 1.5f;
+    [Min(0f)] public float refillDelay = 2f;
     [Tooltip("Shots refilled per second once recharging.")]
-    [Min(0.1f)] public float rechargePerSecond = 12f;
+    [Min(0.1f)] public float refillPerSecond = 8f;
+    [Tooltip("At or below this many shots the HUD warns LOW.")]
+    [Min(0)] public int lowAmmoWarning = 25;
+
+    [Header("Feel")]
+    [Range(0f, 1f)] public float shotVibration = 0.25f;
+    [Range(0f, 1f)] public float hitVibration = 0.8f;
 
     public int Ammo { get; private set; }
-    public bool IsRecharging => Ammo < maxAmmo && Time.time - lastShotTime >= rechargeDelay;
+    public bool IsRecharging => Ammo < maxAmmo && Time.time - lastShotTime >= refillDelay;
     /// <summary>Seconds since the last "out of ammo" click; used by the HUD to blink.</summary>
     public float TimeSinceEmptyClick => Time.time - lastEmptyClick;
 
+    /// <summary>The player most recently hit by our laser, and when (used for "TAGGED" kill confirms).</summary>
+    public NetworkPlayer LastVictim { get; private set; }
+    public float LastVictimTime { get; private set; } = -999f;
+    public float AmmoFraction => Mathf.Clamp01((Ammo + rechargeProgress) / Mathf.Max(1, maxAmmo));
+
     float lastShotTime = -999f;
+    Vector3 lastShotFrom;
     float lastEmptyClick = -999f;
     float rechargeProgress;
+    System.Func<bool>[] gates = new System.Func<bool>[0];
+    System.Action<Vector3, Vector3, bool>[] fireHandlers = new System.Action<Vector3, Vector3, bool>[0];
 
     void Awake()
     {
@@ -58,24 +72,38 @@ public class LocalPlayerRig : MonoBehaviour
 
     void OnEnable()
     {
-        foreach (LaserRay gun in guns)
+        gates = new System.Func<bool>[guns.Length];
+        fireHandlers = new System.Action<Vector3, Vector3, bool>[guns.Length];
+        for (int i = 0; i < guns.Length; i++)
         {
+            LaserRay gun = guns[i];
             if (gun == null) continue;
-            gun.canFire = CanFire;
-            gun.onFired += OnFired;
+            LaserTagFeedback.Hand hand = HandOf(gun);
+            gates[i] = () => CanFire(gun, hand);
+            fireHandlers[i] = (from, to, hit) => OnFired(from, to, hand);
+            gun.canFire = gates[i];
+            gun.onFired += fireHandlers[i];
             gun.onHit += OnHit;
         }
     }
 
     void OnDisable()
     {
-        foreach (LaserRay gun in guns)
+        for (int i = 0; i < guns.Length && i < gates.Length; i++)
         {
+            LaserRay gun = guns[i];
             if (gun == null) continue;
-            if (gun.canFire == (System.Func<bool>)CanFire) gun.canFire = null;
-            gun.onFired -= OnFired;
+            if (gun.canFire == gates[i]) gun.canFire = null;
+            gun.onFired -= fireHandlers[i];
             gun.onHit -= OnHit;
         }
+    }
+
+    LaserTagFeedback.Hand HandOf(LaserRay gun)
+    {
+        if (leftController != null && gun.transform.IsChildOf(leftController)) return LaserTagFeedback.Hand.Left;
+        if (rightController != null && gun.transform.IsChildOf(rightController)) return LaserTagFeedback.Hand.Right;
+        return gun.name.ToLowerInvariant().Contains("left") ? LaserTagFeedback.Hand.Left : LaserTagFeedback.Hand.Right;
     }
 
     void OnDestroy()
@@ -86,8 +114,8 @@ public class LocalPlayerRig : MonoBehaviour
     void Update()
     {
         if (Ammo >= maxAmmo) { rechargeProgress = 0f; return; }
-        if (Time.time - lastShotTime < rechargeDelay) return;
-        rechargeProgress += rechargePerSecond * Time.deltaTime;
+        if (Time.time - lastShotTime < refillDelay) return;
+        rechargeProgress += refillPerSecond * Time.deltaTime;
         int whole = Mathf.FloorToInt(rechargeProgress);
         if (whole > 0)
         {
@@ -98,23 +126,29 @@ public class LocalPlayerRig : MonoBehaviour
 
     // ---------------- shooting ----------------
 
-    bool CanFire()
+    bool CanFire(LaserRay gun, LaserTagFeedback.Hand hand)
     {
         NetworkPlayer me = NetworkPlayer.Local;
         if (me != null && !me.CanShoot) return false;
         if (Ammo <= 0)
         {
+            // Empty: dry click + double tap, and pressing again restarts the recharge wait (like real games).
             lastEmptyClick = Time.time;
+            LaserTagFeedback.PlayEmpty(gun.muzzle != null ? gun.muzzle.position : gun.transform.position);
+            LaserTagFeedback.Haptic(hand, 0.15f, 0.04f);
             return false;
         }
         return true;
     }
 
-    void OnFired(Vector3 from, Vector3 to, bool hit)
+    void OnFired(Vector3 from, Vector3 to, LaserTagFeedback.Hand hand)
     {
         Ammo = Mathf.Max(0, Ammo - 1);
         lastShotTime = Time.time;
+        lastShotFrom = from;
         rechargeProgress = 0f;
+        LaserTagFeedback.PlayShot(from);
+        LaserTagFeedback.Haptic(hand, shotVibration, 0.06f);
         if (NetworkPlayer.Local != null) NetworkPlayer.Local.OwnerFired(from, to);
     }
 
@@ -123,7 +157,19 @@ public class LocalPlayerRig : MonoBehaviour
         NetworkPlayer me = NetworkPlayer.Local;
         if (me == null || hit.collider == null) return;
         NetworkPlayer victim = hit.collider.GetComponentInParent<NetworkPlayer>();
-        if (victim != null && victim != me) me.OwnerReportHit(victim);
+        if (victim == null || victim == me || !victim.IsPresentInWorld) return;
+        me.OwnerReportHit(victim, lastShotFrom, hit.point); // the host re-checks this shot
+        LastVictim = victim;
+        LastVictimTime = Time.time;
+        LaserTagFeedback.PlayHitConfirm();
+        if (PlayerHud.Instance != null) PlayerHud.Instance.ShowHitMarker();
+    }
+
+    /// <summary>Called when the local player loses health.</summary>
+    public void OnDamaged()
+    {
+        LaserTagFeedback.PlayHurt();
+        LaserTagFeedback.Haptic(LaserTagFeedback.Hand.Both, hitVibration, 0.18f);
     }
 
     public void RefillAmmo()

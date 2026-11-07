@@ -68,6 +68,7 @@ public class NetworkPlayer : NetworkBehaviour
     public Color hitFlashColor = new Color(1f, 0.08f, 0.05f, 1f);
     [Min(0.05f)] public float hitFlashSeconds = 0.35f;
     public Color shotColor = new Color(1f, 0.1f, 0.08f, 1f);
+    public Color protectionColor = new Color(0.3f, 0.7f, 1f, 1f);
 
     // ---------- synced data ----------
     public NetworkVariable<PoseState> Pose = new NetworkVariable<PoseState>(default,
@@ -87,10 +88,24 @@ public class NetworkPlayer : NetworkBehaviour
     public NetworkVariable<int> Placement = new NetworkVariable<int>(0);
     /// <summary>Server time at which a <see cref="PlayerLifeState.Respawning"/> player comes back.</summary>
     public NetworkVariable<double> RespawnAt = new NetworkVariable<double>(0);
+    /// <summary>
+    /// Controlled by the server instead of a headset. The game itself never creates these; the optional
+    /// testing tools (Assets/LaserTag/Testing) use it for practice bots.
+    /// </summary>
+    public NetworkVariable<bool> IsBot = new NetworkVariable<bool>(false);
+
+    /// <summary>Server-controlled players: how to move them when the game places them (set by whatever controls them).</summary>
+    [System.NonSerialized] public System.Action<Vector3, float> serverTeleportHandler;
+
+    /// <summary>Server: set before spawning to make this a server-controlled player with this name.</summary>
+    [System.NonSerialized] public string serverBotName;
+    /// <summary>Server time until which this player cannot be hit (spawn protection).</summary>
+    public NetworkVariable<double> ProtectedUntil = new NetworkVariable<double>(0);
 
     // ---------- server-only bookkeeping ----------
     [System.NonSerialized] public float serverLastHitTime = -999f;
     [System.NonSerialized] public double serverEliminatedAt;
+    [System.NonSerialized] public bool serverAnnounced;
 
     // ---------- local state ----------
     float nextPoseSend;
@@ -111,20 +126,26 @@ public class NetworkPlayer : NetworkBehaviour
     }
 
     public string Name => DisplayName.Value.ToString();
+
+    /// <summary>The player wearing THIS headset. Bots are owned by the host but are not the host's player.</summary>
+    public bool IsLocalHuman => IsOwner && !IsBot.Value;
+
+    /// <summary>True while spawn protection is active.</summary>
+    public bool IsProtected => IsSpawned && NetworkManager != null && NetworkManager.ServerTime.Time < ProtectedUntil.Value;
     public bool IsAlive => LifeState.Value == PlayerLifeState.Alive;
 
     /// <summary>Alive and visible to the others (also true in the lobby).</summary>
     public bool IsPresentInWorld => IsSpawned && LifeState.Value == PlayerLifeState.Alive;
 
     /// <summary>True once a real pose has been received/sent.</summary>
-    public bool HasPose => IsOwner ? LocalPlayerRig.Instance != null : IsValidRotation(Pose.Value.headRotation);
+    public bool HasPose => IsLocalHuman ? LocalPlayerRig.Instance != null : IsValidRotation(Pose.Value.headRotation);
 
     /// <summary>Where this player's feet are, as best this machine knows.</summary>
     public Vector3 FeetPosition
     {
         get
         {
-            if (IsOwner && LocalPlayerRig.Instance != null) return LocalPlayerRig.Instance.FeetPosition;
+            if (IsLocalHuman && LocalPlayerRig.Instance != null) return LocalPlayerRig.Instance.FeetPosition;
             return Pose.Value.rootPosition;
         }
     }
@@ -153,6 +174,9 @@ public class NetworkPlayer : NetworkBehaviour
             foreach (ScoutLocalRigBinding binding in avatar.GetComponentsInChildren<ScoutLocalRigBinding>(true))
                 binding.enabled = false;
             avatarRenderers = avatar.GetComponentsInChildren<Renderer>(true);
+            // Performance (Quest 2): up to 5 avatars made of many parts; dynamic shadows from them are costly.
+            foreach (Renderer r in avatarRenderers)
+                r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         }
         if (hitColliders == null || hitColliders.Length == 0)
             hitColliders = GetComponentsInChildren<Collider>(true);
@@ -168,11 +192,17 @@ public class NetworkPlayer : NetworkBehaviour
 
         if (IsServer)
         {
-            DisplayName.Value = new FixedString32Bytes("Player " + (OwnerClientId + 1));
+            // Network variables may only be written once spawned, so bot settings are applied here.
+            if (!string.IsNullOrEmpty(serverBotName))
+            {
+                IsBot.Value = true;
+                DisplayName.Value = new FixedString32Bytes(serverBotName);
+            }
+            if (!IsBot.Value) DisplayName.Value = new FixedString32Bytes("Player " + (OwnerClientId + 1));
             Health.Value = maxHealth;
         }
 
-        if (IsOwner)
+        if (IsLocalHuman)
         {
             Local = this;
             gameObject.name = "Local Network Player";
@@ -180,7 +210,7 @@ public class NetworkPlayer : NetworkBehaviour
         }
         else
         {
-            gameObject.name = "Remote Player " + (OwnerClientId + 1);
+            gameObject.name = IsBot.Value ? Name : "Remote Player " + (OwnerClientId + 1);
         }
 
         if (IsServer && LaserTagGameManager.Instance != null)
@@ -210,7 +240,7 @@ public class NetworkPlayer : NetworkBehaviour
     {
         if (!IsSpawned) return;
 
-        if (IsOwner)
+        if (IsLocalHuman)
         {
             if (Time.unscaledTime >= nextPoseSend) SendPose(force: false);
         }
@@ -294,7 +324,7 @@ public class NetworkPlayer : NetworkBehaviour
     void RefreshPresentation(bool force)
     {
         // Your own network copy is never drawn: the local rig shows your body.
-        bool visible = !IsOwner && IsSpawned && LifeState.Value == PlayerLifeState.Alive && IsValidRotation(Pose.Value.headRotation);
+        bool visible = !IsLocalHuman && IsSpawned && LifeState.Value == PlayerLifeState.Alive && IsValidRotation(Pose.Value.headRotation);
         if (!force && visible == presentationVisible) return;
         presentationVisible = visible;
 
@@ -324,26 +354,48 @@ public class NetworkPlayer : NetworkBehaviour
     void OnHealthChanged(int previous, int current)
     {
         if (current >= previous) return;
-        if (IsOwner)
+        if (IsLocalHuman)
         {
             if (PlayerHud.Instance != null) PlayerHud.Instance.FlashDamage();
+            if (LocalPlayerRig.Instance != null) LocalPlayerRig.Instance.OnDamaged();
         }
         else
         {
             flashUntil = Time.time + hitFlashSeconds; // everybody else sees the avatar light up red
+
+            // Our shot finished them off: kill confirm.
+            LocalPlayerRig rig = LocalPlayerRig.Instance;
+            if (current == 0 && rig != null && rig.LastVictim == this && Time.time - rig.LastVictimTime < 1.5f &&
+                PlayerHud.Instance != null)
+                PlayerHud.Instance.ShowKill(Name);
         }
     }
 
     void OnLifeStateChanged(PlayerLifeState previous, PlayerLifeState current)
     {
-        if (IsOwner && current == PlayerLifeState.Alive && LocalPlayerRig.Instance != null)
+        if (IsLocalHuman && current == PlayerLifeState.Alive && LocalPlayerRig.Instance != null)
             LocalPlayerRig.Instance.RefillAmmo();
     }
 
     void UpdateFlash()
     {
         bool flashing = Time.time < flashUntil && presentationVisible;
-        if (!flashing && flashUntil < 0f) return;
+        bool shielded = presentationVisible && IsProtected;
+        if (!flashing && !shielded && flashUntil < 0f) return;
+
+        if (!flashing && shielded)
+        {
+            // Spawn protection: soft blue pulse.
+            float pulse = 0.5f + 0.5f * Mathf.Sin(Time.time * 12f);
+            Color c = Color.Lerp(Color.white, protectionColor, 0.4f + 0.4f * pulse);
+            flashBlock.Clear();
+            flashBlock.SetColor("_BaseColor", c);
+            flashBlock.SetColor("_Color", c);
+            flashBlock.SetColor("_EmissionColor", protectionColor * pulse);
+            foreach (Renderer r in avatarRenderers) if (r != null) r.SetPropertyBlock(flashBlock);
+            flashUntil = 0f; // so the tint is cleared when protection ends
+            return;
+        }
 
         if (flashing)
         {
@@ -373,10 +425,10 @@ public class NetworkPlayer : NetworkBehaviour
     }
 
     /// <summary>Owner's laser hit another player's collider: ask the server to apply damage.</summary>
-    public void OwnerReportHit(NetworkPlayer victim)
+    public void OwnerReportHit(NetworkPlayer victim, Vector3 from, Vector3 point)
     {
         if (IsOwner && IsSpawned && victim != null && victim != this && victim.IsSpawned)
-            ReportHitRpc(new NetworkObjectReference(victim.NetworkObject));
+            ReportHitRpc(new NetworkObjectReference(victim.NetworkObject), from, point);
     }
 
     [Rpc(SendTo.NotMe, InvokePermission = RpcInvokePermission.Owner, Delivery = RpcDelivery.Unreliable)]
@@ -385,12 +437,30 @@ public class NetworkPlayer : NetworkBehaviour
         ShotBeamFx.Play(from, to, shotColor);
     }
 
+    /// <summary>Server: show a shot fired by a server-controlled player to everybody.</summary>
+    public void ServerShowShot(Vector3 from, Vector3 to)
+    {
+        if (!IsServer) return;
+        ShotBeamFx.Play(from, to, shotColor);
+        ServerShotFxRpc(from, to);
+    }
+
+    [Rpc(SendTo.NotServer, InvokePermission = RpcInvokePermission.Server, Delivery = RpcDelivery.Unreliable)]
+    void ServerShotFxRpc(Vector3 from, Vector3 to)
+    {
+        ShotBeamFx.Play(from, to, shotColor);
+    }
+
     [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Owner)]
-    void ReportHitRpc(NetworkObjectReference victimRef)
+    void ReportHitRpc(NetworkObjectReference victimRef, Vector3 from, Vector3 point)
     {
         if (!victimRef.TryGet(out NetworkObject victimObject)) return;
         if (!victimObject.TryGetComponent(out NetworkPlayer victim)) return;
-        if (LaserTagGameManager.Instance != null) LaserTagGameManager.Instance.ServerHandleHit(this, victim);
+        LaserTagGameManager gm = LaserTagGameManager.Instance;
+        if (gm == null) return;
+        // The shooter's headset only CLAIMS a hit; the host decides (see ServerValidateShot).
+        if (gm.ServerValidateShot(this, victim, from, point, out string reason)) gm.ServerHandleHit(this, victim);
+        else Debug.Log($"[Laser Tag] Hit by {Name} on {victim.Name} rejected: {reason}");
     }
 
     // =====================================================================================
@@ -401,6 +471,11 @@ public class NetworkPlayer : NetworkBehaviour
     public void ServerTeleport(Vector3 feet, float yaw)
     {
         if (!IsServer) return;
+        if (IsBot.Value)
+        {
+            serverTeleportHandler?.Invoke(feet, yaw);
+            return;
+        }
         TeleportOwnerRpc(feet, yaw);
     }
 
