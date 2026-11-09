@@ -69,6 +69,18 @@ public class LaserRay : MonoBehaviour
     /// </summary>
     public System.Action<RaycastHit> onHit;
 
+    /// <summary>
+    /// Optional gate checked before every shot (ammo, player dead, round not started...).
+    /// Return false to block the shot. Leave null to always allow firing.
+    /// </summary>
+    public System.Func<bool> canFire;
+
+    /// <summary>
+    /// Called on every shot, hit or miss: (beam start, beam end, did it hit a collider).
+    /// Used to spend ammo and to show the beam to the other players.
+    /// </summary>
+    public System.Action<Vector3, Vector3, bool> onFired;
+
     // Shared generated textures (made once for all guns)
     static Texture2D glowTexture, coreTexture, spotTexture;
 
@@ -134,7 +146,8 @@ public class LaserRay : MonoBehaviour
         CastRay();
 
         InputAction action = fireAction.action;
-        if (action != null && action.WasPressedThisFrame() && Time.time >= nextShotTime)
+        if (action != null && action.WasPressedThisFrame() && Time.time >= nextShotTime &&
+            (canFire == null || canFire()))
             Fire();
 
         DrawBeam();
@@ -156,6 +169,8 @@ public class LaserRay : MonoBehaviour
     {
         shotTimer = shotDuration;
         nextShotTime = Time.time + cooldown;
+
+        onFired?.Invoke(muzzle.position, rayEnd, hasHit);
 
         if (hasHit)
         {
