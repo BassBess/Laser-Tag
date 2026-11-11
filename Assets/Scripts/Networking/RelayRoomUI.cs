@@ -61,10 +61,13 @@ public sealed class RelayRoomUI : MonoBehaviour
         try
         {
             await SignIn();
+            if (this == null || manager == null || transport == null || !isActiveAndEnabled) return;
             status = "Allocating Relay room...";
             Allocation allocation = await RelayService.Instance.CreateAllocationAsync(maxJoiningPlayers);
+            if (this == null || manager == null || transport == null || !isActiveAndEnabled) return;
             transport.SetRelayServerData(AllocationUtils.ToRelayServerData(allocation, "dtls"));
             string code = await RelayService.Instance.GetJoinCodeAsync(allocation.AllocationId);
+            if (this == null || manager == null || transport == null || !isActiveAndEnabled) return;
             if (!manager.StartHost())
                 throw new InvalidOperationException("NetworkManager.StartHost failed. Check Console / Player Prefab.");
             joinCode = code;
@@ -89,8 +92,10 @@ public sealed class RelayRoomUI : MonoBehaviour
         try
         {
             await SignIn();
+            if (this == null || manager == null || transport == null || !isActiveAndEnabled) return;
             status = "Joining Relay allocation...";
             JoinAllocation allocation = await RelayService.Instance.JoinAllocationAsync(code);
+            if (this == null || manager == null || transport == null || !isActiveAndEnabled) return;
             transport.SetRelayServerData(AllocationUtils.ToRelayServerData(allocation, "dtls"));
             if (!manager.StartClient())
                 throw new InvalidOperationException("NetworkManager.StartClient failed. Check Console.");

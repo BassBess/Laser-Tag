@@ -5,6 +5,7 @@ using Unity.Netcode;
 // Minimal owner-controlled desktop avatar for Relay smoke testing.
 // The owner publishes body and head/hand poses; other peers render them.
 // The server does not yet validate movement: do NOT use for authoritative hit/damage logic.
+[DefaultExecutionOrder(100)]
 [RequireComponent(typeof(NetworkObject), typeof(AvatarPoseDriver), typeof(ScoutAvatar))]
 public sealed class RelayAvatarPlayer : NetworkBehaviour
 {
@@ -41,8 +42,18 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
     private Quaternion visibleHeadRot, visibleLeftRot, visibleRightRot;
     private bool firstRemoteFrame = true;
 
+    public bool UseXRTracking { get; private set; }
+
+    public void SetXRTracking(bool enabled)
+    {
+        if (!IsSpawned || !IsOwner) return;
+        UseXRTracking = enabled;
+        nextSend = 0f;
+    }
+
     public override void OnNetworkSpawn()
     {
+        UseXRTracking = false;
         driver = GetComponent<AvatarPoseDriver>();
         avatar = GetComponent<ScoutAvatar>();
         driver.SetPoseTargets(avatar.head, avatar.leftHand, avatar.rightHand);
@@ -73,12 +84,15 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
         if (!IsSpawned || driver == null) return;
         if (IsOwner)
         {
-            ReadDesktopControls();
-            ApplyPose(1f);
-            if (Time.time >= nextSend)
+            if (!UseXRTracking)
             {
-                nextSend = Time.time + 1f / Mathf.Max(5f, poseSendHz);
-                PublishPose();
+                ReadDesktopControls();
+                ApplyPose(1f);
+                if (Time.time >= nextSend)
+                {
+                    nextSend = Time.time + 1f / Mathf.Max(5f, poseSendHz);
+                    PublishPose();
+                }
             }
         }
         else
@@ -97,6 +111,29 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
             }
             ApplyPose(blend);
         }
+    }
+
+    private void LateUpdate()
+    {
+        // ScoutLocalRigBinding runs first and applies the real tracked pose.
+        // Publish its result, not the synthetic keyboard pose.
+        if (!IsSpawned || !IsOwner || !UseXRTracking || avatar == null)
+            return;
+
+        if (Time.time < nextSend) return;
+        nextSend = Time.time + 1f / Mathf.Max(5f, poseSendHz);
+
+        netBodyPosition.Value = transform.position;
+        netBodyRotation.Value = transform.rotation;
+
+        netHeadPosition.Value = transform.InverseTransformPoint(avatar.head.position);
+        netHeadRotation.Value = Quaternion.Inverse(transform.rotation) * avatar.head.rotation;
+
+        netLeftPosition.Value = transform.InverseTransformPoint(avatar.leftHand.position);
+        netLeftRotation.Value = Quaternion.Inverse(transform.rotation) * avatar.leftHand.rotation;
+
+        netRightPosition.Value = transform.InverseTransformPoint(avatar.rightHand.position);
+        netRightRotation.Value = Quaternion.Inverse(transform.rotation) * avatar.rightHand.rotation;
     }
 
     private void ReadDesktopControls()
