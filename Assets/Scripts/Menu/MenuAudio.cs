@@ -21,6 +21,14 @@ namespace LaserTag.Menu
             click=gameObject.AddComponent<AudioSource>();click.playOnAwake=false;click.volume=.3f;clickClip=Tone(false);click.clip=clickClip;
         }
         public void Click(){if(click)click.Play();}
+        // Short gameplay sounds must respect SFX gain before their first sample,
+        // rather than waiting for the periodic discovery pass.
+        public void TrackEffectsSource(AudioSource source)
+        {
+            if(!source||!settings||settings.Current==null||gains.ContainsKey(source))return;
+            var gain=new Gain{Authored=source.volume,Applied=source.volume*settings.Current.Effects};
+            source.volume=gain.Applied;gains.Add(source,gain);
+        }
         void Update()
         {
             if(!settings||settings.Current==null||!music)return;
