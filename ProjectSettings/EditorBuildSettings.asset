@@ -6,6 +6,12 @@ EditorBuildSettings:
   serializedVersion: 2
   m_Scenes:
   - enabled: 1
+    path: Assets/Scenes/MainMenu.unity
+    guid: 948956781dcb0b64ab6666f98885a539
+  - enabled: 1
+    path: Assets/Scenes/RelayVRGame.unity
+    guid: 0c968b7f1501bb745be0ce82d0029b7a
+  - enabled: 1
     path: Assets/Scenes/RelayPlayground.unity
     guid: fe9de787539754d90b93dd867fbdad75
   - enabled: 1
