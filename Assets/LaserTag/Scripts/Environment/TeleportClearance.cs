@@ -78,11 +78,10 @@ public static class TeleportClearance
         return dx * dx + dz * dz;
     }
 
-    /// <summary>Keep a landing reserved even if its owner leans away between requests.</summary>
-    public static bool ConflictsWithLanding(Vector3 candidate,Vector3 currentFeet,Vector3 reservedLanding,float separation)
+    /// <summary>Occupancy follows current server-accepted feet, not a vacated historical landing.</summary>
+    public static bool ConflictsWithPlayer(Vector3 candidate,Vector3 currentFeet,float separation)
     {
-        float square=separation*separation;
-        return HorizontalSqrDistance(currentFeet,candidate)<square || HorizontalSqrDistance(reservedLanding,candidate)<square;
+        return HorizontalSqrDistance(currentFeet,candidate)<separation*separation;
     }
 
     static bool IsIgnored(Transform t, IList<Transform> roots)
@@ -108,133 +107,269 @@ public static class TeleportClearance
         return buffer;
     }
 
+    public enum RejectionCode
+    {
+        None, QuerySaturated, NoArcLanding, ArcPathRangeLimit, Range, Height, Slope, SurfaceNotEligible,
+        UnsupportedFootprint, SupportHeight, BodyBlocked, PlayerOccupied, SourceInsideCover, SourceOccluded
+    }
+    public struct Rejection
+    {
+        public RejectionCode Code;
+        public Collider Collider;
+        public Vector3? Probe;
+        public Rejection(RejectionCode code,Collider collider=null,Vector3? probe=null){Code=code;Collider=collider;Probe=probe;}
+        public override string ToString()
+        {
+            string text=Collider?$"{Code}: collider='{Hierarchy(Collider.transform)}', layer={Collider.gameObject.layer}":Code.ToString();
+            return Probe.HasValue?text+$", probe={Probe.Value:F3}":text;
+        }
+    }
+
     static readonly RaycastHit[] movementHits=new RaycastHit[128];
     static readonly List<Transform> serverIgnore=new List<Transform>(4);
+    static readonly HashSet<Collider> walkable=new HashSet<Collider>();
+    static LeftHandArcTeleport cachedSettings;
 
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+    static void ResetSurfaces(){walkable.Clear();cachedSettings=null;}
+    public static void InvalidateSurfaces(){ResetSurfaces();}
+
+    // Only authored environment floor/ramp/stair/platform/walkway tokens qualify
+    // automatically. "Default layer" and "up-facing collider" are not eligibility.
+    public static bool HasWalkableName(string name)
+    {
+        if(string.IsNullOrEmpty(name))return false;
+        return HasToken(name,"floor") || HasToken(name,"ramp") || HasToken(name,"stair") ||
+            HasToken(name,"stairs") || HasToken(name,"platform") || HasToken(name,"walkway");
+    }
+    static bool HasToken(string name,string token)
+    {
+        if(!name.StartsWith(token,System.StringComparison.OrdinalIgnoreCase))return false;
+        if(name.Length==token.Length)return true;
+        char next=name[token.Length];
+        return next=='_' || next=='-' || next==' ' || next=='(' || char.IsDigit(next);
+    }
+    public static bool IsAuthoredWalkableSurface(string objectName,string meshName)
+    {
+        // Reusing a floor mesh for a roof/wall/prop does not opt that object in.
+        // Explicit collider references remain available for intentional decks.
+        if(!string.IsNullOrEmpty(objectName) &&
+            (objectName.StartsWith("roof",System.StringComparison.OrdinalIgnoreCase) ||
+             objectName.StartsWith("ceiling",System.StringComparison.OrdinalIgnoreCase) ||
+             objectName.StartsWith("wall",System.StringComparison.OrdinalIgnoreCase) ||
+             objectName.StartsWith("cover",System.StringComparison.OrdinalIgnoreCase) ||
+             objectName.StartsWith("crate",System.StringComparison.OrdinalIgnoreCase) ||
+             objectName.StartsWith("gun",System.StringComparison.OrdinalIgnoreCase) ||
+             objectName.StartsWith("weapon",System.StringComparison.OrdinalIgnoreCase)))return false;
+        return HasWalkableName(objectName) || HasWalkableName(meshName);
+    }
+    static bool StaticEnvironment(Collider c,LeftHandArcTeleport settings)
+    {
+        return c && !(c is CharacterController) && !c.attachedRigidbody &&
+            (!(c is MeshCollider mesh) || mesh.sharedMesh) &&
+            c.gameObject.scene==settings.gameObject.scene &&
+            !c.GetComponentInParent<ScoutAvatar>() && !c.GetComponentInParent<Unity.XR.CoreUtils.XROrigin>();
+    }
+    static void EnsureSurfaces(LeftHandArcTeleport settings)
+    {
+        if(!settings || cachedSettings==settings)return;
+        walkable.Clear();cachedSettings=settings;
+        var spawns=SpawnManager.Instance;
+        if(spawns && spawns.fallbackFloors!=null)
+            foreach(var c in spawns.fallbackFloors)if(StaticEnvironment(c,settings))walkable.Add(c);
+        if(settings.additionalWalkableSurfaces!=null)
+            foreach(var c in settings.additionalWalkableSurfaces)if(StaticEnvironment(c,settings))walkable.Add(c);
+        // One scan per arena, not an object search per arc frame or network pose.
+        foreach(var c in Object.FindObjectsByType<Collider>(FindObjectsInactive.Include))
+        {
+            if(!StaticEnvironment(c,settings))continue;
+            var mesh=c as MeshCollider;
+            if(IsAuthoredWalkableSurface(c.name,mesh && mesh.sharedMesh?mesh.sharedMesh.name:null))
+                walkable.Add(c);
+        }
+    }
+    public static bool IsEligibleSurface(LeftHandArcTeleport settings,Collider c)
+    {
+        EnsureSurfaces(settings);
+        return settings && c && c.enabled && c.gameObject.activeInHierarchy && !c.isTrigger &&
+            c.gameObject.layer!=2 && walkable.Contains(c);
+    }
+    public static string Hierarchy(Transform t)
+    {
+        string path=t.name;
+        while(t.parent){t=t.parent;path=t.name+"/"+path;}
+        return path;
+    }
+    public static void LogSurfaceInventory(LeftHandArcTeleport settings)
+    {
+        InvalidateSurfaces();EnsureSurfaces(settings);
+        Debug.Log($"[TeleportSurfaces] registered colliders={walkable.Count}; reviewed spawn list is a seed, not the full teleport list.",settings);
+        foreach(var c in walkable)
+            Debug.Log($"[TeleportSurfaces] {Hierarchy(c.transform)} layer={c.gameObject.layer} enabled={c.enabled} active={c.gameObject.activeInHierarchy} trigger={c.isTrigger} landingEligible={IsEligibleSurface(settings,c)}",c);
+    }
     static void ServerRoots(RelayAvatarPlayer player)
     {
-        // The host's scene avatar is a visual duplicate. Player occupancy is
-        // checked from authoritative network feet, including the host below.
         LocalPlayerRoots(serverIgnore);
         serverIgnore.Add(player.transform);
     }
-    static bool Solid(Collider c) => c && c.enabled && !c.isTrigger && c.gameObject.layer!=2 && !IsIgnored(c.transform,serverIgnore);
-
-    /// <summary>Reviewed spawn-floor geometry is the arena whitelist, not an AABB or collider name.</summary>
-    public static bool IsReviewedFloor(Vector3 point,float tolerance=.08f)
+    static bool BodySolid(Collider c,IList<Transform> roots) => c && c.enabled && !c.isTrigger && !IsIgnored(c.transform,roots);
+    static bool Solid(Collider c,IList<Transform> roots) => BodySolid(c,roots) && c.gameObject.layer!=2;
+    static bool Nearest(Vector3 origin,Vector3 direction,float distance,IList<Transform> roots,out RaycastHit nearest,out Rejection rejection)
     {
-        var spawns=SpawnManager.Instance;
-        if(!spawns || spawns.fallbackFloors==null)return false;
-        foreach(var floor in spawns.fallbackFloors)
-        {
-            if(!floor || !floor.enabled || !floor.gameObject.activeInHierarchy || floor.isTrigger)continue;
-            Bounds bounds=floor.bounds;
-            if(point.x<bounds.min.x || point.x>bounds.max.x || point.z<bounds.min.z || point.z>bounds.max.z)continue;
-            // Co-located MeshCollider/BoxCollider representations of the same
-            // reviewed floor are allowed, but never a prop above that floor.
-            float probeHeight=Mathf.Max(.15f,tolerance+.05f);
-            if(floor.Raycast(new Ray(point+Vector3.up*probeHeight,Vector3.down),out var hit,probeHeight*2) &&
-                Vector3.Distance(hit.point,point)<=tolerance && hit.normal.y>=.8f)return true;
-        }
-        return false;
+        nearest=default;rejection=default;
+        int count=Physics.RaycastNonAlloc(origin,direction,movementHits,distance,Physics.AllLayers,QueryTriggerInteraction.Ignore);
+        if(count==movementHits.Length){rejection=new Rejection(RejectionCode.QuerySaturated);return false;}
+        float closest=float.PositiveInfinity;bool found=false;
+        for(int i=0;i<count;i++)
+            if(Solid(movementHits[i].collider,roots) && movementHits[i].distance<closest)
+            {nearest=movementHits[i];closest=nearest.distance;found=true;}
+        return found;
     }
-
-    public static bool IsTrackedHeadPathFree(RelayAvatarPlayer player,Vector3 next,bool hasPrevious)
+    public static bool TryTraceArc(LeftHandArcTeleport settings,Vector3 controller,Vector3 forward,IList<Transform> roots,
+        Vector3[] positions,out int used,out RaycastHit landing,out Rejection rejection)
     {
-        if(!SpawnManager.Instance)return true; // menu has no arena; bounds still apply
-        ServerRoots(player);
-        Vector3 feet=new Vector3(next.x,player.ServerFeet.y,next.z);
-        if(!IsReviewedFloor(feet))return false;
-        const float headRadius=.10f;
-        int overlaps=Physics.OverlapSphereNonAlloc(next,headRadius,overlapBuffer,Physics.AllLayers,QueryTriggerInteraction.Ignore);
-        if(overlaps==overlapBuffer.Length)return false;
-        for(int i=0;i<overlaps;i++)if(Solid(overlapBuffer[i]))return false;
-        if(!hasPrevious)return true;
-        Vector3 delta=next-player.ServerEye;
-        if(delta.sqrMagnitude<.000001f)return true;
-        int count=Physics.SphereCastNonAlloc(player.ServerEye,headRadius,delta.normalized,movementHits,delta.magnitude,
-            Physics.AllLayers,QueryTriggerInteraction.Ignore);
-        if(count==movementHits.Length)return false;
-        for(int i=0;i<count;i++)if(Solid(movementHits[i].collider))return false;
-        return true;
-    }
-
-    /// <summary>Server independently reconstructs the existing curved arc, then validates its first landing.</summary>
-    public static bool TryValidateServerTeleport(RelayAvatarPlayer player,Vector3 proposed,out Vector3 approved,out string reason)
-    {
-        approved=default;reason="Teleport destination unavailable";
-        if(!player || !player.IsServer || !RelayAvatarPlayer.Finite(proposed) || !SpawnManager.Instance)return false;
-        var rig=LocalPlayerRig.Instance;
-        var settings=rig?rig.GetComponent<LeftHandArcTeleport>():null;
-        if(!settings){reason="Server teleport configuration missing";return false;}
-        Vector3 feet=player.ServerFeet;
-        if(Vector3.Distance(feet,proposed)>settings.maxRange || Mathf.Abs(feet.y-proposed.y)>settings.maxVerticalChange)
-        {reason="Teleport exceeds range or floor-height limit";return false;}
-        ServerRoots(player);
-        Vector3 forward=player.ServerLeftForward.normalized;
-        Vector3 start=player.ServerLeftController+forward*.08f;
-        // A forged hand inside/beyond a wall must not start the arc on the
-        // far side of cover (raycasts alone do not report an enclosing collider).
-        int sourceCount=Physics.OverlapSphereNonAlloc(start,.03f,overlapBuffer,Physics.AllLayers,QueryTriggerInteraction.Ignore);
-        if(sourceCount==overlapBuffer.Length)return false;
-        for(int i=0;i<sourceCount;i++)if(Solid(overlapBuffer[i]))
-        {reason="Left-controller arc source is inside cover";return false;}
-        Vector3 sourcePath=start-player.ServerEye;
-        if(sourcePath.sqrMagnitude>.000001f)
-        {
-            int sourceHits=Physics.RaycastNonAlloc(player.ServerEye,sourcePath.normalized,movementHits,sourcePath.magnitude,
-                Physics.AllLayers,QueryTriggerInteraction.Ignore);
-            if(sourceHits==movementHits.Length)return false;
-            for(int i=0;i<sourceHits;i++)if(Solid(movementHits[i].collider))
-            {reason="Left-controller arc source is occluded by cover";return false;}
-        }
+        used=1;landing=default;rejection=default;
+        forward.Normalize();Vector3 start=controller+forward*.08f;
         Vector3 velocity=forward*settings.launchSpeed+Vector3.up*settings.upwardBoost;
-        Vector3 previous=start;
+        Vector3 previous=start;if(positions!=null)positions[0]=start;
         float traveled=0;
-        RaycastHit landing=default;
-        bool found=false;
-        int steps=Mathf.Clamp(settings.segments,8,100);
-        for(int step=1;step<=steps;step++)
+        for(int step=1;step<=Mathf.Clamp(settings.segments,8,100);step++)
         {
             float t=step*settings.stepTime;
             Vector3 next=start+velocity*t+Vector3.down*(.5f*settings.gravity*t*t);
             Vector3 delta=next-previous;float length=delta.magnitude;
             if(length<.0001f)continue;
-            traveled+=length;if(traveled>settings.maxRange)break;
-            int count=Physics.RaycastNonAlloc(previous,delta/length,movementHits,length,Physics.AllLayers,QueryTriggerInteraction.Ignore);
-            if(count==movementHits.Length){reason="Teleport physics query saturated";return false;}
-            float closest=float.PositiveInfinity;
-            for(int i=0;i<count;i++)
-                if(Solid(movementHits[i].collider) && movementHits[i].distance<closest)
-                {landing=movementHits[i];closest=landing.distance;found=true;}
-            if(found)break;
-            previous=next;
+            traveled+=length;
+            if(traveled>settings.maxRange){rejection=new Rejection(RejectionCode.ArcPathRangeLimit);return false;}
+            if(Nearest(previous,delta/length,length,roots,out landing,out rejection))
+            {
+                if(positions!=null)positions[used]=landing.point;
+                used++;return true;
+            }
+            if(rejection.Code!=RejectionCode.None)return false;
+            if(positions!=null)positions[used]=next;
+            used++;previous=next;
         }
-        // Tolerance only covers release-frame float/physics differences. The
-        // actual returned landing always comes from the server's own raycast.
-        if(!found || Vector3.Distance(landing.point,proposed)>.15f)
-        {reason="Destination does not match the unobstructed left-hand arc";return false;}
-        if(landing.normal.y<Mathf.Cos(settings.maxFloorSlope*Mathf.Deg2Rad) || !IsReviewedFloor(landing.point))
-        {reason="Destination is not a reviewed walkable arena floor";return false;}
-        float supportTolerance=settings.bodyRadius*Mathf.Tan(settings.maxFloorSlope*Mathf.Deg2Rad)+.08f;
-        if(!IsReviewedFloor(landing.point+Vector3.right*settings.bodyRadius,supportTolerance) ||
-            !IsReviewedFloor(landing.point-Vector3.right*settings.bodyRadius,supportTolerance) ||
-            !IsReviewedFloor(landing.point+Vector3.forward*settings.bodyRadius,supportTolerance) ||
-            !IsReviewedFloor(landing.point-Vector3.forward*settings.bodyRadius,supportTolerance))
-        {reason="Destination is too close to an unsupported floor edge";return false;}
-        float height=Mathf.Max(settings.bodyHeight,player.ServerEye.y-player.ServerFeet.y+.1f);
-        if(!IsBodySpaceFree(landing.point,settings.bodyRadius,height,null,serverIgnore))
-        {reason="Destination has insufficient body clearance";return false;}
-        float separation=settings.bodyRadius*2;
+        rejection=new Rejection(RejectionCode.NoArcLanding);return false;
+    }
+    public static bool TryValidateSource(Vector3 eye,Vector3 controller,Vector3 forward,IList<Transform> roots,out Rejection rejection)
+    {
+        rejection=default;Vector3 start=controller+forward.normalized*.08f;
+        int count=Physics.OverlapSphereNonAlloc(start,.03f,overlapBuffer,Physics.AllLayers,QueryTriggerInteraction.Ignore);
+        if(count==overlapBuffer.Length){rejection=new Rejection(RejectionCode.QuerySaturated);return false;}
+        for(int i=0;i<count;i++)if(Solid(overlapBuffer[i],roots))
+        {rejection=new Rejection(RejectionCode.SourceInsideCover,overlapBuffer[i]);return false;}
+        Vector3 path=start-eye;
+        if(path.sqrMagnitude>.000001f && Nearest(eye,path.normalized,path.magnitude,roots,out var hit,out rejection))
+        {rejection=new Rejection(RejectionCode.SourceOccluded,hit.collider);return false;}
+        return rejection.Code==RejectionCode.None;
+    }
+    static bool Support(LeftHandArcTeleport settings,Vector3 point,float tolerance,IList<Transform> roots,out Rejection rejection)
+    {
+        EnsureSurfaces(settings);
+        float probeHeight=Mathf.Max(.15f,tolerance+.05f);
+        var ray=new Ray(point+Vector3.up*probeHeight,Vector3.down);
+        rejection=default;float closest=float.PositiveInfinity;
+        foreach(var floor in walkable)
+        {
+            if(!IsEligibleSurface(settings,floor))continue;
+            Bounds b=floor.bounds;
+            if(point.x<b.min.x || point.x>b.max.x || point.z<b.min.z || point.z>b.max.z)continue;
+            if(!floor.Raycast(ray,out var hit,probeHeight*2))continue;
+            bool heightValid=Mathf.Abs(hit.point.y-point.y)<=tolerance;
+            bool slopeValid=hit.normal.y>=Mathf.Cos(settings.maxFloorSlope*Mathf.Deg2Rad);
+            if(heightValid && slopeValid){rejection=default;return true;}
+            if(hit.distance<closest)
+            {
+                closest=hit.distance;
+                rejection=new Rejection(heightValid?RejectionCode.Slope:RejectionCode.SupportHeight,floor,point);
+            }
+        }
+        if(rejection.Code!=RejectionCode.None)return false;
+        // Probe eligible geometry directly, as the old reviewed-floor check did.
+        // Low trim/cover must not conceal the floor from a leaning head or a
+        // footprint probe; the separate full body capsule still checks ALL solids.
+        if(Nearest(ray.origin,Vector3.down,probeHeight*2,roots,out var obstruction,out rejection))
+            rejection=new Rejection(RejectionCode.SurfaceNotEligible,obstruction.collider,point);
+        else if(rejection.Code==RejectionCode.None)rejection=new Rejection(RejectionCode.UnsupportedFootprint,null,point);
+        rejection.Probe=point;return false;
+    }
+    public static bool TryValidateLanding(LeftHandArcTeleport settings,RaycastHit hit,Vector3 feet,float eyeHeight,
+        IList<Transform> roots,RelayCombatPlayer except,out Rejection rejection)
+    {
+        rejection=default;
+        if(!hit.collider){rejection=new Rejection(RejectionCode.NoArcLanding);return false;}
+        if(Vector3.Distance(feet,hit.point)>settings.maxRange){rejection=new Rejection(RejectionCode.Range,hit.collider);return false;}
+        if(Mathf.Abs(feet.y-hit.point.y)>settings.maxVerticalChange){rejection=new Rejection(RejectionCode.Height,hit.collider);return false;}
+        if(hit.normal.y<Mathf.Cos(settings.maxFloorSlope*Mathf.Deg2Rad)){rejection=new Rejection(RejectionCode.Slope,hit.collider);return false;}
+        if(!IsEligibleSurface(settings,hit.collider)){rejection=new Rejection(RejectionCode.SurfaceNotEligible,hit.collider);return false;}
+        float tolerance=settings.bodyRadius*Mathf.Tan(settings.maxFloorSlope*Mathf.Deg2Rad)+.08f;
+        if(!Support(settings,hit.point+Vector3.right*settings.bodyRadius,tolerance,roots,out rejection) ||
+            !Support(settings,hit.point-Vector3.right*settings.bodyRadius,tolerance,roots,out rejection) ||
+            !Support(settings,hit.point+Vector3.forward*settings.bodyRadius,tolerance,roots,out rejection) ||
+            !Support(settings,hit.point-Vector3.forward*settings.bodyRadius,tolerance,roots,out rejection))return false;
+        // Exact existing body radius: no extra distance-to-cover margin. Never
+        // ignore the landing mesh wholesale; it may also contain a wall.
+        float radius=Mathf.Max(.05f,settings.bodyRadius);
+        float height=Mathf.Max(settings.bodyHeight,eyeHeight+.1f);
+        Vector3 bottom=hit.point+Vector3.up*(FloorGap+radius);
+        Vector3 top=hit.point+Vector3.up*Mathf.Max(FloorGap+radius,height-radius);
+        int count=Physics.OverlapCapsuleNonAlloc(bottom,top,radius,overlapBuffer,Physics.AllLayers,QueryTriggerInteraction.Ignore);
+        if(count==overlapBuffer.Length){rejection=new Rejection(RejectionCode.QuerySaturated);return false;}
+        for(int i=0;i<count;i++)if(BodySolid(overlapBuffer[i],roots))
+        {rejection=new Rejection(RejectionCode.BodyBlocked,overlapBuffer[i]);return false;}
         foreach(var other in RelayCombatPlayer.All)
         {
-            if(!other || !other.IsPresentInWorld || other.gameObject==player.gameObject)continue;
+            if(!other || other==except || !other.IsPresentInWorld)continue;
             var movement=other.GetComponent<RelayAvatarPlayer>();
-            // Last landing stays reserved while this player occupies its
-            // bounded room-scale bubble, until their next approved placement.
-            if(ConflictsWithLanding(landing.point,other.FeetPosition,movement?movement.ReservedLanding:other.FeetPosition,separation))
-            {reason="Destination is occupied by another player";return false;}
+            Vector3 occupied=movement && movement.OriginRevision!=0?movement.ServerFeet:other.FeetPosition;
+            // ServerFeet moves synchronously on approval. That already protects
+            // concurrent requests; a vacated old landing is not a second player.
+            if(ConflictsWithPlayer(hit.point,occupied,settings.bodyRadius*2))
+            {rejection=new Rejection(RejectionCode.PlayerOccupied,other.hitboxes?other.hitboxes.ColliderFor(HitboxPart.Body):null);return false;}
         }
-        approved=landing.point;reason="";return true;
+        return true;
+    }
+    public static bool IsTrackedHeadPathFree(RelayAvatarPlayer player,Vector3 next,bool hasPrevious,out string reason)
+    {
+        reason=null;
+        if(!SpawnManager.Instance)return true;
+        var rig=LocalPlayerRig.Instance;var settings=rig?rig.GetComponent<LeftHandArcTeleport>():null;
+        if(!settings){reason="Tracking/server teleport configuration missing";return false;}
+        ServerRoots(player);
+        Vector3 feet=new Vector3(next.x,player.ServerFeet.y,next.z);
+        if(!Support(settings,feet,.08f,serverIgnore,out var support))
+        {reason="Tracking/floor: "+support;return false;}
+        const float headRadius=.10f;
+        int count=Physics.OverlapSphereNonAlloc(next,headRadius,overlapBuffer,Physics.AllLayers,QueryTriggerInteraction.Ignore);
+        if(count==overlapBuffer.Length){reason="Tracking/head overlap query saturated";return false;}
+        for(int i=0;i<count;i++)if(Solid(overlapBuffer[i],serverIgnore))
+        {reason="Tracking/head inside cover: "+Hierarchy(overlapBuffer[i].transform);return false;}
+        if(!hasPrevious)return true;
+        Vector3 delta=next-player.ServerEye;if(delta.sqrMagnitude<.000001f)return true;
+        count=Physics.SphereCastNonAlloc(player.ServerEye,headRadius,delta.normalized,movementHits,delta.magnitude,Physics.AllLayers,QueryTriggerInteraction.Ignore);
+        if(count==movementHits.Length){reason="Tracking/head sweep query saturated";return false;}
+        for(int i=0;i<count;i++)if(Solid(movementHits[i].collider,serverIgnore))
+        {reason="Tracking/head crosses cover: "+Hierarchy(movementHits[i].collider.transform);return false;}
+        return true;
+    }
+    public static bool TryValidateServerTeleport(RelayAvatarPlayer player,Vector3 proposed,out Vector3 approved,out string reason)
+    {
+        approved=default;reason=null;
+        if(!player || !player.IsServer){reason="Server authority unavailable";return false;}
+        if(!RelayAvatarPlayer.Finite(proposed)){reason="Non-finite destination";return false;}
+        var rig=LocalPlayerRig.Instance;var settings=rig?rig.GetComponent<LeftHandArcTeleport>():null;
+        if(!settings || !SpawnManager.Instance){reason="Server arena configuration missing";return false;}
+        ServerRoots(player);
+        if(!TryValidateSource(player.ServerEye,player.ServerLeftController,player.ServerLeftForward,serverIgnore,out var rejection))
+        {reason=rejection.ToString();return false;}
+        if(!TryTraceArc(settings,player.ServerLeftController,player.ServerLeftForward,serverIgnore,null,out _,out var landing,out rejection))
+        {reason=rejection.ToString();return false;}
+        if(Vector3.Distance(landing.point,proposed)>.15f)
+        {reason=$"ArcMismatch: server={landing.point:F3}, error={Vector3.Distance(landing.point,proposed):F3}m, collider='{Hierarchy(landing.collider.transform)}'";return false;}
+        if(!TryValidateLanding(settings,landing,player.ServerFeet,player.ServerEye.y-player.ServerFeet.y,serverIgnore,
+            player.GetComponent<RelayCombatPlayer>(),out rejection))
+        {reason=rejection.ToString();return false;}
+        approved=landing.point;return true;
     }
 }

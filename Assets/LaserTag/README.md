@@ -1,5 +1,126 @@
 # Integrated Relay game
 
+## Teleport surface/navigation fix and temporary diagnostics
+
+This section supersedes the original strict whitelist and persistent landing
+reservation descriptions below. The authority protocol, tracking bounds and
+input controls remain unchanged.
+
+The navigation regression came from using SpawnManager.fallbackFloors as a
+complete teleport whitelist. That 76-reference list was generated for spawn
+fallbacks, and at least three current floor_2_LOD1 MeshColliders (scene IDs
+601001652, 1236449459 and 1625145987) are missing. The server also checked source
+visibility, four footprint probes, taller headset clearance and floor membership
+while the client preview omitted those rules. An old landing remained occupied
+even after its owner had moved away through accepted room-scale tracking.
+These are code/scene findings; their relative impact has not been measured in Unity.
+
+TeleportClearance now registers the reviewed references, plus static colliders
+whose own object/mesh name starts with an authored floor/ramp/stair(s)/platform/
+walkway token. Token boundaries distinguish `floor_2` from `FloorLamp`, for
+example. Generic prop, wall, roof and ceiling colliders do not qualify merely
+because their top faces upward. Semantic roof/wall/cover/crate object names also
+prevent automatic opt-in through reuse of a floor mesh. CharacterControllers, rigidbody objects, avatar
+and XR-rig geometry, triggers, inactive/disabled/empty colliders and Ignore
+Raycast landing surfaces are excluded. Default is not a dedicated floor layer:
+the inspected arena floors and other geometry share layer 0. Walls/cover on
+other layers remain collision blockers even when they are not eligible landings.
+
+For an intentionally walkable collider with a generic name, explicitly assign
+it to LeftHandArcTeleport.additionalWalkableSurfaces. Do not add walls/props or
+change Default into a catch-all walkable layer. The registry is cached once per
+arena. After editing this list or adding colliders during Play Mode, use the
+component context menu **Log Teleport Surface Inventory (Editor/Development)**
+to rebuild it. Run this on both peers when making temporary Play Mode changes.
+The menu prints registered hierarchy paths, layers and collider enablement.
+
+Client preview and server validation use the same tracking-envelope function, curved-arc tracing, source
+clearance/visibility, surface membership, slope, range/height, four support probes,
+body capsule and current-player occupancy checks. The 18m range, 4m vertical
+change, 35-degree slope, 0.25m radius, minimum 1.7m body height, 0.15m arc-match
+tolerance and tracking envelope have not been increased. The capsule uses the
+configured body radius with no extra distance-to-cover margin; valid space next
+to cover is usable, but intersecting it still fails. Taller tracked eyes require
+their existing extra head clearance on both preview and server.
+
+Occupancy now follows the current authoritative feet from the replicated
+snapshot, rather than an interpolated avatar or a permanently reserved historical
+landing. Approval updates those feet synchronously before the next request can
+be handled, so simultaneous overlapping requests still cannot both succeed.
+The snapshot's Landing field remains for initial stage/spawn alignment.
+Preview remains provisional: another player, moving geometry, tracking sample,
+round transition or network delay can change the result before server processing.
+
+### All teleport rejection gates
+
+| Stage | Rejection conditions |
+| --- | --- |
+| Client startup/input | Missing rig/camera/left references or shader; focus loss; inactive rig/controller; no spawned local owner; dead player; missing match/movement; pending request; disallowed phase/participation; left tracking/device loss; server origin change while aiming. Neutral rearming and forward/release thresholds remain required. |
+| Submission | Not owner/spawned; pending request; origin revision not initialized; tracking binding unavailable. |
+| Server admission | Netcode owner permission; stale/duplicate request; request rate; stale origin revision; missing match; stale round; player not alive; disallowed phase/participation; non-finite candidate. |
+| Tracking data | Stale sample; non-finite position; invalid/non-unit rotation; play-area radius, eye height, body horizontal/vertical offset, visual-head offset or individual hand/controller reach outside their existing bounds; excessive head speed. |
+| Tracking geometry | Missing configuration; no eligible support at the projected feet/current floor height; head inside/crossing cover; saturated head/floor query. |
+| Arc source | Source overlap query saturated; controller source inside solid cover; source occluded from the eye; source ray query saturated. |
+| Arc | No solid landing within the segment window; path length exhausted; saturated query; candidate differs from the server's first arc hit by more than 0.15m. |
+| Landing | Feet-to-point range; vertical change; slope; surface ineligible; missing footprint support, excessive support height difference or unsupported slope; saturated support/body query; occupied body capsule; another living player's current position within the existing separation distance. |
+
+Permission failures are rejected by Netcode before the request handler. Other
+server request failures now retain their specific reason instead of returning a
+generic "Tracking sample rejected". Preview geometry uses an allocation-free
+rejection value; diagnostics are formatted only when releasing a rejected aim.
+
+### Reading the diagnostics and testing in Unity
+
+1. Use matching updated code on host and client. Enter through MainMenu, load the
+   arena and inspect the existing LeftHandArcTeleport on Relay Local Gameplay.
+   Leave **Teleport Diagnostics** enabled initially. Filter Console for
+   `[TeleportReject]`. Temporary warnings are emitted only in Editor/Development
+   builds, at most once per second per preview/server player. Wait over one
+   second between deliberate rejection tests to avoid suppression. Disable the
+   checkbox after validation; existing throttled `[Movement]` security logs remain.
+2. Invoke **Log Teleport Surface Inventory (Editor/Development)** in Play Mode.
+   Confirm the floor_2_LOD1 colliders above register despite absence from the
+   spawn list. Review any unexpected surface names before the demonstration.
+3. In simulator controller mode press 9, hold Shift+I, then release I before
+   Shift; alternatively hold/release F8. Sweep previously rejected floor areas,
+   seams and different levels. A cyan arc should agree with server geometry
+   checks on an unchanged scene; confirm the second peer sees each approval.
+4. `[preview]` means local rules rejected the released aim; no request was sent.
+   `[submit]` means ownership/binding/origin/pending prevented submission.
+   `[server]` gives owner, request, revision, attempted destination, exact reason
+   and current feet. `BodyBlocked`, `SourceInsideCover` and `SourceOccluded`
+   include the blocking hierarchy/layer. Support failures include the failed
+   probe point. `ArcMismatch` includes the server hit and measured discrepancy.
+   `Tracking/...` identifies the tracking gate, not a destination range failure.
+5. For `SurfaceNotEligible`, inspect the logged collider. If it is intentionally
+   walkable static environment geometry, opt in that collider explicitly and
+   rebuild the registry on both peers. A wall, roof or small prop should stay
+   ineligible. Do not increase tolerances to hide a missing/incorrect collider.
+6. Test a flat floor next to cover: approximately 0.26–0.35m from a vertical
+   face should fit the 0.25m body radius if headroom/support are clear; 0.20m
+   should fail with BodyBlocked. Also test walls, prop tops, real edges, slopes
+   over 35 degrees, low ceilings and occupied destinations: all must remain
+   blocked for the appropriate reason.
+7. Have one player occupy a point: the other must be rejected. Move the first
+   player's simulated head/feet about 1m away within the approved tracking
+   envelope and wait for accepted updates: the vacated point should become free.
+   Then make simultaneous requests for one free point: exactly one must succeed.
+8. Verify death/countdown/respawn cancellation, remote positions, both hands,
+   left-only teleport, right-only shooting, ammo/recharge, audio and HUD. Repeat
+   representative floor/cover cases in a Quest Development build before relying
+   on the change for the demonstration.
+
+Native Unity physics/gameplay and headset validation have not been run here.
+The installed Editor cannot start in this environment because required shared
+libraries are missing. Managed compilation/tests do not establish arena coverage.
+Validation completed: 57 managed checks passed against the runtime tracking,
+occupancy, surface-name/mesh classification and rejection-reason functions.
+Cached-reference C# compilation passed for Editor runtime, Editor tools and
+Android/IL2CPP conditional code, with no new runtime compiler warnings.
+Static checks confirmed the shared client/server rules, unchanged authority and
+limits, and all 76 reviewed references. Scene/prefab/gameplay asset hashes and
+`git diff --check` passed. No native physics, transport or Android build was run.
+
 ## Server-authoritative locomotion (protocol 3)
 
 This section supersedes the historical owner-pose limitation and local-teleport

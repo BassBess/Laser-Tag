@@ -64,11 +64,13 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
     bool requestPending, firstRemoteFrame = true, hasServerTracking;
     uint pendingRequest;
     double lastPoseAt, nextRequestAt, tokenAt, nextDiagnostic;
+    float nextTeleportDiagnostic;
     float poseTokens = 3;
     public bool UseXRTracking { get; private set; }
     public bool TeleportPending => requestPending;
     public uint OriginRevision => state.Value.Revision;
     public Vector3 ServerFeet => state.Value.Origin + Rotation * Horizontal(state.Value.Tracking.Eye);
+    // Kept for diagnostics/compatibility; occupancy no longer reserves this history.
     public Vector3 ReservedLanding => state.Value.Landing;
     public Vector3 ServerEye => state.Value.Origin + Rotation * state.Value.Tracking.Eye;
     public Vector3 ServerLeftController => state.Value.Origin + Rotation * state.Value.Tracking.Controller;
@@ -186,8 +188,10 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
     }
     bool TryAcceptTracking(uint sequence,TrackingPose p,out string reason)
     {
-        reason="invalid tracking envelope";
-        if(sequence<=serverPoseSequence || !ValidateTracking(p))return false;
+        reason=null;
+        if(sequence<=serverPoseSequence){reason="Tracking/stale sample sequence";return false;}
+        reason=TrackingPoseRejection(p,roomScaleRadius,maximumHeadHeight,maximumHandReach);
+        if(reason!=null)return false;
         double now=NetworkManager.ServerTime.Time;
         var previous=state.Value;
         if(hasServerTracking && Vector3.Distance(previous.Tracking.Eye,p.Eye)>
@@ -206,8 +210,7 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
         }
         // A head cannot traverse solid cover simply by claiming room-scale input.
         Vector3 nextEye=previous.Origin+Quaternion.Euler(0,previous.Yaw,0)*p.Eye;
-        if(!TeleportClearance.IsTrackedHeadPathFree(this,nextEye,hasServerTracking))
-        {reason="tracking crosses cover or leaves reviewed floor";return false;}
+        if(!TeleportClearance.IsTrackedHeadPathFree(this,nextEye,hasServerTracking,out reason))return false;
         previous.Tracking=p;state.Value=previous;
         serverPoseSequence=sequence;lastPoseAt=now;hasServerTracking=true;
         if(calibrate)ApprovedOriginOwnerRpc(previous.Origin,previous.Yaw,previous.Revision);
@@ -218,15 +221,38 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
         => ValidateTrackingPose(p,roomScaleRadius,maximumHeadHeight,maximumHandReach);
 
     public static bool ValidateTrackingPose(TrackingPose p,float roomScaleRadius=2f,float maximumHeadHeight=2.6f,float maximumHandReach=1.65f)
+        => TrackingPoseRejection(p,roomScaleRadius,maximumHeadHeight,maximumHandReach)==null;
+
+    public static string TrackingPoseRejection(TrackingPose p,float roomScaleRadius=2f,float maximumHeadHeight=2.6f,float maximumHandReach=1.65f)
     {
-        if(!Finite(p.Eye)||!Finite(p.Body)||!Finite(p.Head)||!Finite(p.Left)||!Finite(p.Right)||!Finite(p.Controller) ||
-            !ValidRotation(p.EyeRotation)||!ValidRotation(p.BodyRotation)||!ValidRotation(p.HeadRotation)||
-            !ValidRotation(p.LeftRotation)||!ValidRotation(p.RightRotation)||!ValidRotation(p.ControllerRotation))return false;
-        return Horizontal(p.Eye).magnitude<=roomScaleRadius && p.Eye.y>=.2f && p.Eye.y<=maximumHeadHeight &&
-            Horizontal(p.Body-p.Eye).magnitude<=.3f && p.Body.y>=-.8f && p.Body.y<=.3f &&
-            Horizontal(p.Head-p.Eye).magnitude<=.35f && Vector3.Distance(p.Head,p.Eye)<=.85f &&
-            Vector3.Distance(p.Left,p.Eye)<=maximumHandReach && Vector3.Distance(p.Right,p.Eye)<=maximumHandReach &&
-            Vector3.Distance(p.Controller,p.Eye)<=maximumHandReach;
+        if(!Finite(roomScaleRadius)||!Finite(maximumHeadHeight)||!Finite(maximumHandReach))return "Tracking/server envelope configuration is non-finite";
+        if(!Finite(p.Eye))return "Tracking/non-finite eye";
+        if(!Finite(p.Body))return "Tracking/non-finite body";
+        if(!Finite(p.Head))return "Tracking/non-finite visual head";
+        if(!Finite(p.Left))return "Tracking/non-finite left hand";
+        if(!Finite(p.Right))return "Tracking/non-finite right hand";
+        if(!Finite(p.Controller))return "Tracking/non-finite left controller";
+        if(!ValidRotation(p.EyeRotation))return "Tracking/invalid eye rotation";
+        if(!ValidRotation(p.BodyRotation))return "Tracking/invalid body rotation";
+        if(!ValidRotation(p.HeadRotation))return "Tracking/invalid visual head rotation";
+        if(!ValidRotation(p.LeftRotation))return "Tracking/invalid left hand rotation";
+        if(!ValidRotation(p.RightRotation))return "Tracking/invalid right hand rotation";
+        if(!ValidRotation(p.ControllerRotation))return "Tracking/invalid left controller rotation";
+        if(Horizontal(p.Eye).magnitude>roomScaleRadius)return "Tracking/physical play-area radius exceeded";
+        if(p.Eye.y<.2f || p.Eye.y>maximumHeadHeight)return "Tracking/eye height outside envelope";
+        if(Horizontal(p.Body-p.Eye).magnitude>.3f)return "Tracking/body horizontal offset exceeded";
+        if(p.Body.y<-.8f || p.Body.y>.3f)return "Tracking/body height outside envelope";
+        if(Horizontal(p.Head-p.Eye).magnitude>.35f || Vector3.Distance(p.Head,p.Eye)>.85f)return "Tracking/visual head offset exceeded";
+        if(Vector3.Distance(p.Left,p.Eye)>maximumHandReach)return "Tracking/left hand reach exceeded";
+        if(Vector3.Distance(p.Right,p.Eye)>maximumHandReach)return "Tracking/right hand reach exceeded";
+        if(Vector3.Distance(p.Controller,p.Eye)>maximumHandReach)return "Tracking/left controller reach exceeded";
+        return null;
+    }
+    public string PreviewTrackingRejection()
+    {
+        if(localRevision==0)return "Client/origin not initialized";
+        if(!localBinding)return "Client/tracking binding unavailable";
+        return TrackingPoseRejection(Capture(localBinding),roomScaleRadius,maximumHeadHeight,maximumHandReach);
     }
     public static bool Finite(Vector3 p) => Finite(p.x)&&Finite(p.y)&&Finite(p.z);
     static bool Finite(float v) => !float.IsNaN(v)&&!float.IsInfinity(v);
@@ -238,7 +264,9 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
     }
     public bool RequestTeleport(Vector3 feet)
     {
-        if(!IsOwner || !IsSpawned || requestPending || localRevision==0 || !localBinding)return false;
+        string unavailable=!IsOwner?"Client/not owner":!IsSpawned?"Client/not spawned":
+            requestPending?"Client/request pending":localRevision==0?"Client/origin not initialized":!localBinding?"Client/tracking binding unavailable":null;
+        if(unavailable!=null){LogTeleportRejection(0,feet,unavailable,"submit");return false;}
         localBinding.ApplyPose(); // sample the release frame, including current controller aim
         requestPending=true;pendingRequest=++requestSequence;
         var game=LaserTagGameManager.Instance;
@@ -248,24 +276,47 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
     [Rpc(SendTo.Server,InvokePermission=RpcInvokePermission.Owner)]
     void RequestTeleportRpc(uint request,uint revision,int round,Vector3 feet,uint trackingSequence,TrackingPose tracking)
     {
-        if(request<=serverRequestSequence)return;serverRequestSequence=request;
+        if(request<=serverRequestSequence){LogTeleportRejection(request,feet,"Request/stale or duplicate sequence");return;}
+        serverRequestSequence=request;
         double now=NetworkManager.ServerTime.Time;
-        if(now<nextRequestAt){TeleportResultRpc(request,false,"Teleport requested too quickly");return;}
+        if(now<nextRequestAt){RejectTeleport(request,feet,"Request/rate limit");return;}
         nextRequestAt=now+Mathf.Max(.1f,teleportRequestInterval);
         var game=LaserTagGameManager.Instance;
-        if(revision!=state.Value.Revision || !game || round!=game.RoundNumber.Value || !combat || !combat.IsAlive ||
-            !(game.Phase.Value==GamePhase.Lobby || (game.Phase.Value==GamePhase.Playing && combat.InRound.Value)))
-        {TeleportResultRpc(request,false,"Teleport unavailable in this state");return;}
-        if(!Finite(feet) || !TryAcceptTracking(trackingSequence,tracking,out var reason))
-        {TeleportResultRpc(request,false,"Tracking sample rejected");return;}
+        if(revision!=state.Value.Revision){RejectTeleport(request,feet,"Request/stale origin revision");return;}
+        if(!game){RejectTeleport(request,feet,"Request/match unavailable");return;}
+        if(round!=game.RoundNumber.Value){RejectTeleport(request,feet,"Request/stale round");return;}
+        if(!combat){RejectTeleport(request,feet,"Request/combat player unavailable");return;}
+        if(!combat.IsAlive){RejectTeleport(request,feet,$"Request/player state {combat.LifeState.Value}");return;}
+        if(game.Phase.Value!=GamePhase.Lobby && game.Phase.Value!=GamePhase.Playing)
+        {RejectTeleport(request,feet,$"Request/match phase {game.Phase.Value}");return;}
+        if(game.Phase.Value==GamePhase.Playing && !combat.InRound.Value)
+        {RejectTeleport(request,feet,"Request/not participating in current round");return;}
+        if(!Finite(feet)){RejectTeleport(request,feet,"Request/non-finite destination");return;}
         Physics.SyncTransforms();
+        if(!TryAcceptTracking(trackingSequence,tracking,out var reason))
+        {RejectTeleport(request,feet,reason);return;}
         if(!TeleportClearance.TryValidateServerTeleport(this,feet,out var approved,out reason))
-        {TeleportResultRpc(request,false,reason);return;}
-        // Unity executes requests sequentially. Publish/reserve before processing
+        {RejectTeleport(request,feet,reason);return;}
+        // Unity executes requests sequentially. Publish authoritative feet before processing
         // another player's request, without waiting for an owner acknowledgement.
         var s=state.Value;
         SetServerOrigin(s.Origin+(approved-ServerFeet),s.Yaw,approved);
         TeleportResultRpc(request,true,"");
+    }
+    void RejectTeleport(uint request,Vector3 feet,string reason)
+    {
+        LogTeleportRejection(request,feet,reason);
+        TeleportResultRpc(request,false,reason);
+    }
+    void LogTeleportRejection(uint request,Vector3 feet,string reason,string stage="server")
+    {
+        if(!Application.isEditor && !Debug.isDebugBuild)return;
+        var rig=LocalPlayerRig.Instance;var settings=rig?rig.GetComponent<LeftHandArcTeleport>():null;
+        if((settings && !settings.teleportDiagnostics) || Time.unscaledTime<nextTeleportDiagnostic)return;
+        nextTeleportDiagnostic=Time.unscaledTime+1f;
+        float radius=settings?settings.bodyRadius:0;
+        float height=settings?Mathf.Max(settings.bodyHeight,ServerEye.y-ServerFeet.y+.1f):0;
+        Debug.LogWarning($"[TeleportReject][{stage}] owner={OwnerClientId} request={request} revision={OriginRevision} destination={feet:F3} reason={reason}; currentFeet={ServerFeet:F3} radius={radius:F2} requiredHeight={height:F2}. Throttled 1s.",this);
     }
     public void ServerPlace(Vector3 feet,float facingYaw)
     {

@@ -42,6 +42,13 @@ public sealed class LeftHandArcTeleport : MonoBehaviour
     public float bodyHeight = 1.7f;
     public float maxVerticalChange = 4f;
 
+    [Header("Walkable environment")]
+    [Tooltip("Explicit opt-in for walkable static colliders with generic names. Reviewed spawn floors and authored floor/ramp/stair/platform/walkway assets are included automatically.")]
+    public Collider[] additionalWalkableSurfaces = new Collider[0];
+    [Header("Temporary teleport diagnostics")]
+    [Tooltip("Throttled rejection logs in Editor/Development builds only. Disable after arena validation.")]
+    public bool teleportDiagnostics = true;
+
     InputAction leftStick;
     LineRenderer arc;
     Material arcMaterial;
@@ -59,8 +66,13 @@ public sealed class LeftHandArcTeleport : MonoBehaviour
     bool editorAim;
 #endif
 
-    readonly RaycastHit[] hits = new RaycastHit[48];
+    readonly Vector3[] arcPositions = new Vector3[101];
     readonly List<Transform> ignoreRoots = new List<Transform>();
+    TeleportClearance.Rejection previewRejection;
+    string previewTrackingRejection;
+    RaycastHit previewHit;
+    Vector3 attemptedDestination;
+    float nextPreviewDiagnostic;
 
     void Awake()
     {
@@ -98,6 +110,7 @@ public sealed class LeftHandArcTeleport : MonoBehaviour
     void OnDisable()
     {
         leftStick?.Disable();
+        if(aiming)LogPreviewRejection("Client/component disabled");
         CancelAim();
     }
 
@@ -162,8 +175,9 @@ public sealed class LeftHandArcTeleport : MonoBehaviour
 
     void Update()
     {
-        if (!CanTeleport())
+        if (!CanTeleport(out var unavailable))
         {
+            if(aiming)LogPreviewRejection(unavailable);
             CancelAim();
             return;
         }
@@ -171,6 +185,7 @@ public sealed class LeftHandArcTeleport : MonoBehaviour
         // A respawn/server placement while aiming must never commit the old aim.
         if (aiming && (xrOrigin.transform.position - aimOrigin).sqrMagnitude > 0.0001f)
         {
+            LogPreviewRejection("Client/origin changed while aiming");
             CancelAim();
             return;
         }
@@ -199,6 +214,7 @@ public sealed class LeftHandArcTeleport : MonoBehaviour
         {
             if (!UsableLeftStick(aimingStick))
             {
+                LogPreviewRejection("Client/left tracking or input device lost");
                 CancelAim();
                 return;
             }
@@ -241,17 +257,22 @@ public sealed class LeftHandArcTeleport : MonoBehaviour
         return tracked != null && tracked.isPressed;
     }
 
-    bool CanTeleport()
+    bool CanTeleport() => CanTeleport(out _);
+    bool CanTeleport(out string reason)
     {
         var player = RelayCombatPlayer.Local;
         var game = LaserTagGameManager.Instance;
         if(player && !networkMovement)networkMovement=player.GetComponent<RelayAvatarPlayer>();
-        return Application.isFocused && xrOrigin && xrOrigin.gameObject.activeInHierarchy &&
-            playerCamera && leftController && leftController.gameObject.activeInHierarchy &&
-            player && player.IsOwner && player.IsSpawned && player.IsAlive && game &&
-            networkMovement && !networkMovement.TeleportPending &&
-            (game.Phase.Value == GamePhase.Lobby ||
-             (game.Phase.Value == GamePhase.Playing && player.InRound.Value));
+        reason=null;
+        if(!Application.isFocused)reason="Client/application not focused";
+        else if(!xrOrigin || !xrOrigin.gameObject.activeInHierarchy)reason="Client/active rig unavailable";
+        else if(!playerCamera || !leftController || !leftController.gameObject.activeInHierarchy)reason="Client/camera or left controller unavailable";
+        else if(!player || !player.IsOwner || !player.IsSpawned)reason="Client/owned player unavailable";
+        else if(!player.IsAlive)reason="Client/player not alive";
+        else if(!game || !networkMovement)reason="Client/match or movement unavailable";
+        else if(networkMovement.TeleportPending)reason="Client/request already pending";
+        else if(!(game.Phase.Value==GamePhase.Lobby || (game.Phase.Value==GamePhase.Playing && player.InRound.Value)))reason="Client/match phase does not permit teleport";
+        return reason==null;
     }
 
     void BeginAim(Vector2Control axis)
@@ -264,7 +285,12 @@ public sealed class LeftHandArcTeleport : MonoBehaviour
     void FinishAim()
     {
         // UpdateArc was run on this release frame: never use a stale destination.
-        if (validDestination && CanTeleport()) Teleport();
+        if(CanTeleport(out var reason))
+        {
+            if(validDestination)Teleport();
+            else LogPreviewRejection(previewTrackingRejection??previewRejection.ToString());
+        }
+        else LogPreviewRejection(reason);
         CancelAim();
     }
 
@@ -282,214 +308,58 @@ public sealed class LeftHandArcTeleport : MonoBehaviour
 
     void OnApplicationFocus(bool focused)
     {
-        if (!focused) CancelAim();
-    }
-
-    bool IgnoreCollider(Collider collider)
-    {
-        if (!collider || !collider.enabled || collider.isTrigger)
-            return true;
-
-        if (collider.gameObject.layer == 2)
-            return true;
-
-        Transform t = collider.transform;
-
-        if (t.IsChildOf(xrOrigin.transform))
-            return true;
-
-        var localRig = LocalPlayerRig.Instance;
-
-        if (localRig && localRig.avatar &&
-            t.IsChildOf(localRig.avatar.transform))
-            return true;
-
-        var networkPlayer = RelayCombatPlayer.Local;
-
-        if (networkPlayer &&
-            t.IsChildOf(networkPlayer.transform))
-            return true;
-
-        return false;
-    }
-
-    bool FindNearestHit(
-        Vector3 origin,
-        Vector3 direction,
-        float distance,
-        out RaycastHit nearest)
-    {
-        nearest = default;
-
-        int count = Physics.RaycastNonAlloc(
-            origin,
-            direction,
-            hits,
-            distance,
-            Physics.AllLayers,
-            QueryTriggerInteraction.Ignore
-        );
-
-        float bestDistance = float.PositiveInfinity;
-        bool found = false;
-
-        for (int i = 0; i < count; i++)
-        {
-            RaycastHit hit = hits[i];
-
-            if (IgnoreCollider(hit.collider))
-                continue;
-
-            if (hit.distance >= bestDistance)
-                continue;
-
-            nearest = hit;
-            bestDistance = hit.distance;
-            found = true;
-        }
-
-        return found;
-    }
-
-    bool SafeDestination(RaycastHit hit)
-    {
-        if (hit.collider == null)
-            return false;
-
-        // No teleporting onto walls or steep slopes.
-        float minUp = Mathf.Cos(maxFloorSlope * Mathf.Deg2Rad);
-
-        if (hit.normal.y < minUp)
-            return false;
-
-        Vector3 currentFeet = new Vector3(
-            playerCamera.transform.position.x,
-            xrOrigin.transform.position.y,
-            playerCamera.transform.position.z
-        );
-
-        if (Vector3.Distance(currentFeet, hit.point) > maxRange)
-            return false;
-
-        if (Mathf.Abs(hit.point.y - currentFeet.y) >
-            maxVerticalChange)
-            return false;
-
-        TeleportClearance.LocalPlayerRoots(ignoreRoots);
-
-        return TeleportClearance.IsFarFromPlayers(hit.point, bodyRadius * 2f, RelayCombatPlayer.Local) &&
-            TeleportClearance.IsBodySpaceFree(
-            hit.point,
-            bodyRadius,
-            bodyHeight,
-            hit.collider,
-            ignoreRoots
-        );
+        if (!focused){if(aiming)LogPreviewRejection("Client/application focus lost");CancelAim();}
     }
 
     void UpdateArc()
     {
-        if (!arc)
-            return;
-
-        Vector3 forward = leftController.forward.normalized;
-        Vector3 start =
-            leftController.position + forward * 0.08f;
-
-        Vector3 velocity =
-            forward * launchSpeed +
-            Vector3.up * upwardBoost;
-
-        Vector3 previous = start;
-
-        int steps = Mathf.Clamp(segments, 8, 100);
-
-        Vector3[] positions = new Vector3[steps + 1];
-        positions[0] = start;
-
-        int used = 1;
-        float traveled = 0f;
-
-        validDestination = false;
-        bool reachedSurface = false;
-        RaycastHit surfaceHit = default;
-
-        for (int i = 1; i <= steps; i++)
-        {
-            float t = i * stepTime;
-
-            Vector3 next =
-                start +
-                velocity * t +
-                Vector3.down * (0.5f * gravity * t * t);
-
-            Vector3 difference = next - previous;
-            float distance = difference.magnitude;
-
-            if (distance < 0.0001f)
-                continue;
-
-            traveled += distance;
-
-            if (traveled > maxRange)
-                break;
-
-            if (FindNearestHit(
-                previous,
-                difference / distance,
-                distance,
-                out RaycastHit hit))
-            {
-                positions[used++] = hit.point;
-                surfaceHit = hit;
-                reachedSurface = true;
-                break;
-            }
-
-            positions[used++] = next;
-            previous = next;
-        }
-
-        if (reachedSurface && SafeDestination(surfaceHit))
-        {
-            validDestination = true;
-            destination = surfaceHit.point;
-        }
-
-        arc.positionCount = used;
-
-        for (int i = 0; i < used; i++)
-            arc.SetPosition(i, positions[i]);
-
-        Color color = validDestination
-            ? Color.cyan
-            : Color.red;
-
-        arc.startColor = color;
-        arc.endColor = color;
-        arc.enabled = true;
-
-        if (marker)
+        if(!arc)return;
+        TeleportClearance.LocalPlayerRoots(ignoreRoots);
+        Vector3 forward=leftController.forward.normalized;
+        bool reached=TeleportClearance.TryTraceArc(this,leftController.position,forward,ignoreRoots,arcPositions,
+            out int used,out previewHit,out previewRejection);
+        attemptedDestination=reached?previewHit.point:arcPositions[Mathf.Max(0,used-1)];
+        // Preview and server run the same source, surface, support, clearance and
+        // occupancy rules. Only the server may approve and move the origin.
+        bool sourceValid=TeleportClearance.TryValidateSource(playerCamera.transform.position,leftController.position,forward,
+            ignoreRoots,out var sourceRejection);
+        Vector3 feet=new Vector3(playerCamera.transform.position.x,xrOrigin.transform.position.y,playerCamera.transform.position.z);
+        previewTrackingRejection=networkMovement?networkMovement.PreviewTrackingRejection():"Client/network movement unavailable";
+        validDestination=false;
+        if(!sourceValid)previewRejection=sourceRejection;
+        else if(reached)
+            validDestination=TeleportClearance.TryValidateLanding(this,previewHit,feet,
+                playerCamera.transform.position.y-feet.y,ignoreRoots,RelayCombatPlayer.Local,out previewRejection);
+        if(previewTrackingRejection!=null)validDestination=false;
+        if(validDestination)destination=previewHit.point;
+        arc.positionCount=used;
+        for(int i=0;i<used;i++)arc.SetPosition(i,arcPositions[i]);
+        Color color=validDestination?Color.cyan:Color.red;
+        arc.startColor=color;arc.endColor=color;arc.enabled=true;
+        if(marker)
         {
             marker.SetActive(validDestination);
-
-            if (validDestination)
+            if(validDestination)
             {
-                marker.transform.position =
-                    destination + surfaceHit.normal * 0.025f;
-
-                marker.transform.rotation =
-                    Quaternion.FromToRotation(
-                        Vector3.up,
-                        surfaceHit.normal
-                    );
-
-                marker.transform.localScale =
-                    new Vector3(0.25f, 0.008f, 0.25f);
-
-                markerMaterial.color = Color.cyan;
+                marker.transform.position=destination+previewHit.normal*.025f;
+                marker.transform.rotation=Quaternion.FromToRotation(Vector3.up,previewHit.normal);
+                marker.transform.localScale=new Vector3(.25f,.008f,.25f);
+                markerMaterial.color=Color.cyan;
             }
         }
+    }
+    void LogPreviewRejection(string reason)
+    {
+        if(!Application.isEditor && !Debug.isDebugBuild)return;
+        if(!teleportDiagnostics || Time.unscaledTime<nextPreviewDiagnostic)return;
+        nextPreviewDiagnostic=Time.unscaledTime+1f;
+        string surface=previewHit.collider?TeleportClearance.Hierarchy(previewHit.collider.transform):"none";
+        Debug.LogWarning($"[TeleportReject][preview] destination={attemptedDestination:F3} reason={reason}; hit='{surface}' radius={bodyRadius:F2} eyeHeight={(playerCamera&&xrOrigin?playerCamera.transform.position.y-xrOrigin.transform.position.y:0):F2}. Throttled 1s.",this);
+    }
+    [ContextMenu("Log Teleport Surface Inventory (Editor/Development)")]
+    void LogSurfaceInventory()
+    {
+        if(Application.isEditor || Debug.isDebugBuild)TeleportClearance.LogSurfaceInventory(this);
     }
 
     void Teleport()
