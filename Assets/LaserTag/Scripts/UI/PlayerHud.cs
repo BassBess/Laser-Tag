@@ -7,8 +7,9 @@ using UnityEngine.UI;
 /// <summary>
 /// Head-locked HUD for the local player, built entirely in code (no prefab to wire up).
 ///
-///  - Upper left:  health bar (shrinks and turns red when hit; 0 = tagged out).
-///  - Upper right: shots left, with a small recharge bar.
+///  - Upper left:  health bar/value and remaining lives.
+///  - Upper centre: connected players and replicated session capacity.
+///  - Lower right: shots left, with a small recharge bar.
 ///  - Centre:      lobby / countdown / respawn countdown / eliminated messages.
 ///  - Full view:   red flash when you are hit.
 ///  - Game over:   scoreboard ranking every player, your own row highlighted.
@@ -44,6 +45,9 @@ public class PlayerHud : MonoBehaviour
     RectTransform healthFill;
     Image healthFillImage;
     TextMeshProUGUI healthText, ammoText, ammoMaxText, ammoLabel, centerText, subText, statusText, killText;
+    TextMeshProUGUI livesText, playersText;
+    int shownHealth=-1, shownMaxHealth=-1, shownAmmo=-1, shownMaxAmmo=-1;
+    int shownLives=int.MinValue, shownPlayers=-1, shownCapacity=-1;
     RectTransform ammoFill;
     Image ammoFillImage;
     Image[] hitMarker = new Image[0];
@@ -84,6 +88,8 @@ public class PlayerHud : MonoBehaviour
     {
         if (Instance == this) Instance = null;
         if (canvas != null) Destroy(canvas.gameObject);
+        if (imageMaterial != null) Destroy(imageMaterial);
+        if (textMaterial != null) Destroy(textMaterial);
     }
 
     /// <summary>Red flash over the whole view (called when the local player loses health).</summary>
@@ -149,24 +155,28 @@ public class PlayerHud : MonoBehaviour
         damageFlash = MakeImage(root.transform, "Damage Flash", Vector2.zero, new Vector2(6000, 4000), new Color(1f, 0f, 0f, 0f));
 
         // ---- Health (upper left) ----
-        var healthPos = new Vector2(-CanvasWidth * 0.5f + 175f, CanvasHeight * 0.5f - 45f);
-        MakeText(root.transform, "Health Label", healthPos + new Vector2(-75f, 30f), new Vector2(200, 30), "HEALTH", 22,
+        var healthPos = new Vector2(-355f, 205f);
+        MakeText(root.transform, "Health Label", healthPos + new Vector2(-60f, 37f), new Vector2(120, 30), "HEALTH", 22,
             TextAlignmentOptions.Left, new Color(1, 1, 1, 0.8f));
-        MakeImage(root.transform, "Health Back", healthPos, new Vector2(300, 28), new Color(0f, 0f, 0f, 0.55f));
-        healthFillImage = MakeImage(root.transform, "Health Fill", healthPos, new Vector2(292, 20), healthHigh);
+        MakeImage(root.transform, "Health Back", healthPos, new Vector2(240, 28), new Color(0f, 0f, 0f, 0.55f));
+        healthFillImage = MakeImage(root.transform, "Health Fill", healthPos, new Vector2(232, 20), healthHigh);
         healthFill = healthFillImage.rectTransform;
         healthFill.pivot = new Vector2(0f, 0.5f);
-        healthFill.anchoredPosition = healthPos + new Vector2(-146f, 0f);
-        healthText = MakeText(root.transform, "Health Value", healthPos + new Vector2(75f, 30f), new Vector2(150, 30), "100", 24,
+        healthFill.anchoredPosition = healthPos + new Vector2(-116f, 0f);
+        healthText = MakeText(root.transform, "Health Value", healthPos + new Vector2(65f, 37f), new Vector2(130, 30), "", 24,
             TextAlignmentOptions.Right, Color.white);
+        livesText = MakeText(root.transform, "Lives", new Vector2(-170f, 205f), new Vector2(110, 32), "", 24,
+            TextAlignmentOptions.Left, healthHigh);
+        playersText = MakeText(root.transform, "Connected Players", new Vector2(0f, 245f), new Vector2(260, 32), "", 26,
+            TextAlignmentOptions.Center, ammoColor);
 
-        // ---- Ammo (upper right) ----
-        var ammoPos = new Vector2(CanvasWidth * 0.5f - 130f, CanvasHeight * 0.5f - 45f);
+        // ---- Ammo (lower right, outside the aiming/teleport centre) ----
+        var ammoPos = new Vector2(355f, -205f);
         ammoLabel = MakeText(root.transform, "Ammo Label", ammoPos + new Vector2(0f, 34f), new Vector2(220, 30), "SHOTS", 22,
             TextAlignmentOptions.Right, new Color(1, 1, 1, 0.8f));
-        ammoText = MakeText(root.transform, "Ammo Value", ammoPos + new Vector2(-55f, 2f), new Vector2(160, 50), "100", 44,
+        ammoText = MakeText(root.transform, "Ammo Value", ammoPos + new Vector2(-55f, 2f), new Vector2(180, 54), "", 48,
             TextAlignmentOptions.Right, ammoColor);
-        ammoMaxText = MakeText(root.transform, "Ammo Max", ammoPos + new Vector2(80f, -4f), new Vector2(110, 36), "/ 100", 24,
+        ammoMaxText = MakeText(root.transform, "Ammo Max", ammoPos + new Vector2(80f, -4f), new Vector2(80, 40), "", 30,
             TextAlignmentOptions.Left, new Color(1, 1, 1, 0.6f));
         MakeImage(root.transform, "Ammo Back", ammoPos + new Vector2(10f, -26f), new Vector2(200, 8), new Color(0f, 0f, 0f, 0.55f));
         ammoFillImage = MakeImage(root.transform, "Ammo Fill", ammoPos + new Vector2(10f, -26f), new Vector2(200, 8), ammoColor);
@@ -192,11 +202,11 @@ public class PlayerHud : MonoBehaviour
         // ---- Kill feed (top centre, under the status line) ----
         feedTexts = new TextMeshProUGUI[FeedLines];
         for (int i = 0; i < FeedLines; i++)
-            feedTexts[i] = MakeText(root.transform, "Kill Feed " + i, new Vector2(0f, CanvasHeight * 0.5f - 62f - i * 26f),
+            feedTexts[i] = MakeText(root.transform, "Kill Feed " + i, new Vector2(0f, 170f - i * 26f),
                 new Vector2(600, 26), "", 20, TextAlignmentOptions.Center, Color.white);
 
         // ---- Centre messages ----
-        statusText = MakeText(root.transform, "Status", new Vector2(0f, CanvasHeight * 0.5f - 30f), new Vector2(420, 30), "", 20,
+        statusText = MakeText(root.transform, "Status", new Vector2(0f, 210f), new Vector2(220, 30), "", 20,
             TextAlignmentOptions.Center, new Color(1, 1, 1, 0.75f));
         centerText = MakeText(root.transform, "Center", new Vector2(0f, 60f), new Vector2(900, 120), "", 64,
             TextAlignmentOptions.Center, Color.white);
@@ -296,9 +306,29 @@ public class PlayerHud : MonoBehaviour
         int maxHealth = me != null ? Mathf.Max(1, me.maxHealth) : 100;
         int health = me != null ? me.Health.Value : maxHealth;
         float healthFraction = Mathf.Clamp01((float)health / maxHealth);
-        healthFill.sizeDelta = new Vector2(292f * healthFraction, 20f);
+        healthFill.sizeDelta = new Vector2(232f * healthFraction, 20f);
         healthFillImage.color = Color.Lerp(healthLow, healthHigh, healthFraction);
-        SetText(healthText, health.ToString());
+        if(health!=shownHealth || maxHealth!=shownMaxHealth)
+        {
+            healthText.SetText("{0}/{1}",(float)health,(float)maxHealth);
+            shownHealth=health;shownMaxHealth=maxHealth;
+        }
+        int lives=me!=null?me.LivesLeft.Value:0;
+        if(lives!=shownLives){livesText.SetText("Lives: {0}",lives);shownLives=lives;}
+
+        // The replicated lobby survives the scene switch and includes peers
+        // before their arena avatars finish spawning. Never invent a capacity
+        // from minPlayersToStart, which is a different gameplay setting.
+        var session=LaserTag.Menu.MenuSessionController.Instance;
+        var lobby=session!=null?session.Lobby:null;
+        int connectedPlayers=lobby!=null && lobby.IsSpawned ? lobby.Members.Count : gameRunning?gm.ConnectedPlayerCount:0;
+        int capacity=lobby!=null && lobby.IsSpawned ? lobby.Capacity.Value : session!=null && session.Manager!=null && session.Manager.IsHost?session.MaximumPlayers:0;
+        if(connectedPlayers!=shownPlayers || capacity!=shownCapacity)
+        {
+            if(capacity>0)playersText.SetText("Players: {0}/{1}",(float)connectedPlayers,(float)capacity);
+            else playersText.SetText("Players: {0}",connectedPlayers);
+            shownPlayers=connectedPlayers;shownCapacity=capacity;
+        }
 
         // ---- ammo ----
         int ammo = rig != null ? rig.Ammo : 0;
@@ -307,8 +337,8 @@ public class PlayerHud : MonoBehaviour
         bool low = !empty && rig != null && ammo <= rig.lowAmmoWarning;
         bool blinkOn = Mathf.Repeat(Time.time, 0.5f) < 0.25f;
         Color ammoState = empty ? healthLow : low ? lowAmmoColor : ammoColor;
-        SetText(ammoText, ammo.ToString());
-        SetText(ammoMaxText, "/ " + maxAmmo);
+        if(ammo!=shownAmmo){ammoText.SetText("{0}",ammo);shownAmmo=ammo;}
+        if(maxAmmo!=shownMaxAmmo){ammoMaxText.SetText("/{0}",maxAmmo);shownMaxAmmo=maxAmmo;}
         ammoText.color = empty && rig != null && rig.TimeSinceEmptyClick < 0.15f ? Color.white : ammoState;
         ammoFill.sizeDelta = new Vector2(200f * (rig != null ? rig.AmmoFraction : 1f), 8f);
         ammoFillImage.color = ammoState;
@@ -382,9 +412,7 @@ public class PlayerHud : MonoBehaviour
                     break;
 
                 case GamePhase.Playing:
-                    status = me.InRound.Value
-                        ? $"Lives {me.LivesLeft.Value}   |   Players left {gm.PlayersLeft}"
-                        : $"Players left {gm.PlayersLeft}";
+                    status = $"Players left {gm.PlayersLeft}";
                     if (me.IsAlive && me.IsProtected) sub = "<color=#66B3FF>SPAWN PROTECTION</color>";
                     switch (me.LifeState.Value)
                     {

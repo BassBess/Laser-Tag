@@ -9,14 +9,56 @@ public static class LaserTagFeedback
     public enum Hand { Left, Right, Both }
 
     static AudioClip shot, empty, hitConfirm, hurt;
+    // Eight short voices cover overlapping shots without allocating an object
+    // or searching the scene on every trigger press. Scene unload owns cleanup.
+    static readonly AudioSource[] shotVoices = new AudioSource[8];
+    static int nextShotVoice;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
-    static void ResetStatics() { shot = empty = hitConfirm = hurt = null; }
+    static void ResetStatics()
+    {
+        shot = empty = hitConfirm = hurt = null;
+        System.Array.Clear(shotVoices,0,shotVoices.Length);
+        nextShotVoice=0;
+    }
 
     // ---------------- sounds ----------------
 
     /// <summary>Laser "pew" at a position (3D, so other players' shots come from their guns).</summary>
-    public static void PlayShot(Vector3 at, float volume = 0.55f) => Play(Shot(), at, volume, 1f);
+    public static void PlayShot(Vector3 at, float volume = .55f) => PlayShotVoice(at, 1f, volume);
+
+    /// <summary>Accepted local shot, heard clearly independent of muzzle distance.</summary>
+    public static void PlayLocalShot() => PlayShotVoice(Vector3.zero, 0f, .65f);
+
+    static void PlayShotVoice(Vector3 at, float spatial, float volume)
+    {
+        int slot=nextShotVoice;
+        for(int i=0;i<shotVoices.Length;i++)
+        {
+            int candidate=(nextShotVoice+i)%shotVoices.Length;
+            if(!shotVoices[candidate]||!shotVoices[candidate].isPlaying){slot=candidate;break;}
+        }
+        nextShotVoice=(slot+1)%shotVoices.Length;
+        var source=shotVoices[slot];
+        if(!source)
+        {
+            var go=new GameObject("Laser Shot Voice");
+            source=go.AddComponent<AudioSource>();
+            source.playOnAwake=false;
+            source.volume=1f;
+            source.minDistance=1.5f;
+            source.maxDistance=30f;
+            source.rolloffMode=AudioRolloffMode.Linear;
+            source.dopplerLevel=0;
+            shotVoices[slot]=source;
+            Object.FindAnyObjectByType<LaserTag.Menu.MenuAudio>()?.TrackEffectsSource(source);
+        }
+        source.Stop();
+        source.transform.position=at;
+        source.spatialBlend=spatial;
+        source.pitch=Random.Range(.94f,1.06f);
+        source.PlayOneShot(Shot(),volume);
+    }
 
     /// <summary>Dry click when pulling the trigger with no shots left.</summary>
     public static void PlayEmpty(Vector3 at) => Play(Empty(), at, 0.6f, 1f);

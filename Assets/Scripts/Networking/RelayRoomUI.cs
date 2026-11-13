@@ -127,6 +127,9 @@ public sealed class RelayRoomUI : MonoBehaviour
     {
         manager = GetComponent<NetworkManager>(); transport = GetComponent<UnityTransport>();
         if (busy || manager.IsListening) throw new InvalidOperationException("A connection is already active. Leave it before connecting again.");
+        // The authoritative snapshot replaces the old owner-written pose wire
+        // format. Reject old builds before their variable/RPC layouts disagree.
+        manager.NetworkConfig.ProtocolVersion = RelayAvatarPlayer.MovementProtocolVersion;
     }
     private void CheckActive(CancellationToken cancellation)
     {

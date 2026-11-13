@@ -81,6 +81,16 @@ public class LocalPlayerRig : MonoBehaviour
         }
     }
 
+    void Start()
+    {
+        // Catch scene wiring regressions once, before an unbound gun can appear
+        // to fire without submitting shots or updating authoritative ammunition.
+        foreach (var gun in guns)
+            if (gun && gun.isActiveAndEnabled && HandOf(gun) == LaserTagFeedback.Hand.Right)
+                return;
+        Debug.LogError("[Combat] LocalPlayerRig has no active right-hand gun. Assign the Right Gun LaserRay to guns; a beam alone does not confirm a server shot.", this);
+    }
+
     void OnDisable()
     {
         for (int i = 0; i < guns.Length && i < gates.Length; i++)
@@ -119,6 +129,9 @@ public class LocalPlayerRig : MonoBehaviour
 
     bool CanFire(LaserRay gun, LaserTagFeedback.Hand hand)
     {
+        // Right-hand weapon only. Left controller is reserved for teleportation.
+        if (hand == LaserTagFeedback.Hand.Left)
+            return false;
         RelayCombatPlayer me = RelayCombatPlayer.Local;
         if (me == null || !me.CanShoot) return false;
         if (Ammo <= 0)
@@ -138,7 +151,8 @@ public class LocalPlayerRig : MonoBehaviour
 
         lastShotFrom = from;
 
-        LaserTagFeedback.PlayShot(from);
+        // Beam/haptics are predicted. Shooting audio is played once the server
+        // accepts this shot, so rejected requests never sound like accepted fire.
         LaserTagFeedback.Haptic(hand, shotVibration, 0.06f);
         if (RelayCombatPlayer.Local != null) RelayCombatPlayer.Local.OwnerFired(from, to, hand == LaserTagFeedback.Hand.Left ? 0 : 1);
     }
@@ -186,30 +200,12 @@ public class LocalPlayerRig : MonoBehaviour
 
     // ---------------- teleport ----------------
 
-    /// <summary>Moves the player so their feet land on <paramref name="feet"/>, looking towards <paramref name="yaw"/>.</summary>
-    public void TeleportTo(Vector3 feet, float yaw)
+    /// <summary>Apply an absolute server frame without modifying tracked local poses.</summary>
+    internal void ApplyApprovedOrigin(Vector3 origin, float yaw)
     {
-        Quaternion facing = Quaternion.Euler(0f, yaw, 0f);
-        if (teleportationProvider != null && teleportationProvider.isActiveAndEnabled)
-        {
-            var request = new TeleportRequest
-            {
-                destinationPosition = feet,
-                destinationRotation = facing,
-                matchOrientation = MatchOrientation.TargetUpAndForward,
-                requestTime = Time.time,
-            };
-            if (teleportationProvider.QueueTeleportRequest(request)) return;
-        }
-
-        // Fallback without a locomotion system: move the rig directly.
-        if (xrOrigin == null || playerCamera == null) return;
-        Transform rig = xrOrigin.transform;
-        Transform cam = playerCamera.transform;
-        Vector3 camForward = Vector3.ProjectOnPlane(cam.forward, Vector3.up);
-        float camYaw = camForward.sqrMagnitude > 0.001f ? Quaternion.LookRotation(camForward).eulerAngles.y : rig.eulerAngles.y;
-        rig.RotateAround(cam.position, Vector3.up, Mathf.DeltaAngle(camYaw, yaw));
-        Vector3 currentFeet = new Vector3(cam.position.x, rig.position.y, cam.position.z);
-        rig.position += feet - currentFeet;
+        if (!xrOrigin) return;
+        Quaternion rotation=Quaternion.Euler(0f,yaw,0f);
+        if(xrOrigin.transform.position!=origin || xrOrigin.transform.rotation!=rotation)
+            xrOrigin.transform.SetPositionAndRotation(origin,rotation);
     }
 }

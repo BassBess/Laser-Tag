@@ -47,13 +47,14 @@ public sealed class RelayCombatPlayer : NetworkBehaviour
     {
         get
         {
+            if(IsServer && TryGetComponent<RelayAvatarPlayer>(out var movement))return movement.ServerFeet;
             if(IsLocalHuman && LocalPlayerRig.Instance) return LocalPlayerRig.Instance.FeetPosition;
             var p=transform.position;var legs=avatar?avatar.GetComponent<ScoutProceduralLegs>():null;
             if(legs&&legs.IsActive)p.y=legs.CurrentFloorHeight;return p;
         }
     }
     public int PredictedAmmo => Mathf.Max(0,Ammo.Value-pending.Count);
-    public bool IsRecharging => IsSpawned && Ammo.Value<maxAmmo && NetworkManager.ServerTime.Time>=LastShotAt.Value+refillDelay;
+    public bool IsRecharging => IsSpawned && IsAlive && pending.Count==0 && Ammo.Value<maxAmmo && NetworkManager.ServerTime.Time>=LastShotAt.Value+refillDelay;
     readonly List<uint> pending = new List<uint>();
     uint localSequence, serverSeenSequence, acceptedSequence;
     int localRound, acceptedRound;
@@ -70,6 +71,7 @@ public sealed class RelayCombatPlayer : NetworkBehaviour
     readonly List<Renderer> hidden = new List<Renderer>();
     MaterialPropertyBlock[] originalBlocks;
     MaterialPropertyBlock effect;
+    double nextShotDiagnostic;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
     static void ResetStatics(){All.Clear();Local=null;}
@@ -103,7 +105,10 @@ public sealed class RelayCombatPlayer : NetworkBehaviour
         RefreshPresentation(false);UpdateFlash();
     }
     public void ClearPrediction(){pending.Clear();}
-    void ShotAcknowledged(uint old,uint current){pending.RemoveAll(sequence=>sequence<=current);}
+    void ShotAcknowledged(uint old,uint current)
+    {
+        for(int i=pending.Count-1;i>=0;i--)if(pending[i]<=current)pending.RemoveAt(i);
+    }
     public void ResetAmmoServer()
     {
         if(!IsServer)return;Ammo.Value=maxAmmo;rechargeProgress=0;LastShotAt.Value=-999;acceptedSequence=0;claimUsed=true;
@@ -119,21 +124,49 @@ public sealed class RelayCombatPlayer : NetworkBehaviour
     [Rpc(SendTo.Server,InvokePermission=RpcInvokePermission.Owner)]
     void SubmitShotRpc(uint sequence,int round,int gun,Vector3 from,Vector3 to)
     {
-        if(sequence<=serverSeenSequence)return;serverSeenSequence=sequence;AcknowledgedShot.Value=sequence;
-        var game=LaserTagGameManager.Instance;
-        if(!game||!CanShoot||round!=game.RoundNumber.Value||gun<0||gun>1||Ammo.Value<=0||!Finite(from)||!Finite(to))return;
-        double now=NetworkManager.ServerTime.Time;
-        shotTokens[gun]=Mathf.Min(2,shotTokens[gun]+(float)System.Math.Max(0,now-tokenUpdatedAt[gun])/Mathf.Max(.02f,shotInterval));
-        tokenUpdatedAt[gun]=now;
-        if(shotTokens[gun]<1)return;
-        Transform hand=gun==0?avatar.leftHand:avatar.rightHand;Vector3 offset=gun==0?leftMuzzleOffset:rightMuzzleOffset;
-        Vector3 direction=hand.rotation*(gun==0?leftAimDirection:rightAimDirection);Vector3 expected=hand.position+hand.rotation*offset;
-        Vector3 ray=to-from;
-        if(Vector3.Distance(expected,from)>game.gunToHandTolerance||ray.magnitude>game.maxShotRange+.05f||ray.sqrMagnitude<.000001f||Vector3.Angle(direction,ray)>aimTolerance)return;
-        Ammo.Value--;LastShotAt.Value=now;rechargeProgress=0;shotTokens[gun]--;
-        acceptedSequence=sequence;acceptedRound=round;acceptedFrom=from;acceptedEnd=to;acceptedTime=now;claimUsed=false;
-        if(!IsOwner)ShotBeamFx.Play(from,to,shotColor);RemoteShotRpc(from,to);
+        if(sequence<=serverSeenSequence)return;
+        serverSeenSequence=sequence;
+        try
+        {
+            var game=LaserTagGameManager.Instance;
+            if(!game||!CanShoot||round!=game.RoundNumber.Value){RejectShot("round/life state");return;}
+            if(gun!=1){RejectShot("only right gun index 1 is permitted");return;}
+            if(Ammo.Value<=0){RejectShot("empty ammunition");return;}
+            if(!Finite(from)||!Finite(to)){RejectShot("non-finite ray");return;}
+            double now=NetworkManager.ServerTime.Time;
+            shotTokens[gun]=Mathf.Min(2,shotTokens[gun]+(float)System.Math.Max(0,now-tokenUpdatedAt[gun])/Mathf.Max(.02f,shotInterval));
+            tokenUpdatedAt[gun]=now;
+            if(shotTokens[gun]<1){RejectShot("shot rate exceeded");return;}
+            Transform hand=avatar?avatar.rightHand:null;
+            if(!hand){RejectShot("missing right avatar hand");return;}
+            Vector3 direction=hand.rotation*rightAimDirection;
+            Vector3 expected=hand.position+hand.rotation*rightMuzzleOffset;
+            Vector3 ray=to-from;
+            if(Vector3.Distance(expected,from)>game.gunToHandTolerance){RejectShot("muzzle away from right hand");return;}
+            if(ray.magnitude>game.maxShotRange+.05f||ray.sqrMagnitude<.000001f){RejectShot("invalid ray range");return;}
+            if(Vector3.Angle(direction,ray)>aimTolerance){RejectShot("aim differs from right hand");return;}
+            Ammo.Value--;LastShotAt.Value=now;rechargeProgress=0;shotTokens[gun]--;
+            acceptedSequence=sequence;acceptedRound=round;acceptedFrom=from;acceptedEnd=to;acceptedTime=now;claimUsed=false;
+            AcceptedShotOwnerRpc();
+            if(!IsOwner)ShotBeamFx.Play(from,to,shotColor);
+            RemoteShotRpc(from,to);
+        }
+        finally
+        {
+            // Reconcile both accepted and rejected predictions after the ammo
+            // decision. The host also observes this callback synchronously.
+            AcknowledgedShot.Value=sequence;
+        }
     }
+    void RejectShot(string reason)
+    {
+        double now=NetworkManager.ServerTime.Time;
+        if(now<nextShotDiagnostic)return;
+        nextShotDiagnostic=now+5;
+        Debug.LogWarning($"[Combat] Rejected shot from owner {OwnerClientId}: {reason}. Ammo={Ammo.Value}, life={LifeState.Value}, inRound={InRound.Value}. Further rejections suppressed for 5s.",this);
+    }
+    [Rpc(SendTo.Owner,InvokePermission=RpcInvokePermission.Server)]
+    void AcceptedShotOwnerRpc(){LaserTagFeedback.PlayLocalShot();}
     [Rpc(SendTo.NotServer,InvokePermission=RpcInvokePermission.Server,Delivery=RpcDelivery.Unreliable)]
     void RemoteShotRpc(Vector3 from,Vector3 to){if(!IsOwner)ShotBeamFx.Play(from,to,shotColor);}
     public void OwnerReportHit(RelayCombatPlayer victim,Vector3 from,Vector3 point,HitboxPart part)
@@ -158,9 +191,10 @@ public sealed class RelayCombatPlayer : NetworkBehaviour
         LaserTagFeedback.PlayHitConfirm();if(PlayerHud.Instance){PlayerHud.Instance.ShowHitMarker();if(tagged&&target.TryGet(out var obj)&&obj.TryGetComponent<RelayCombatPlayer>(out var victim))PlayerHud.Instance.ShowKill(victim.Name);}
     }
     static bool Finite(Vector3 value)=>!float.IsNaN(value.x)&&!float.IsNaN(value.y)&&!float.IsNaN(value.z)&&!float.IsInfinity(value.x)&&!float.IsInfinity(value.y)&&!float.IsInfinity(value.z);
-    public void ServerTeleport(Vector3 feet,float yaw){if(IsServer)TeleportOwnerRpc(feet,yaw);}
-    [Rpc(SendTo.Owner)]
-    void TeleportOwnerRpc(Vector3 feet,float yaw){if(LocalPlayerRig.Instance)LocalPlayerRig.Instance.TeleportTo(feet,yaw);}
+    public void ServerTeleport(Vector3 feet,float yaw)
+    {
+        if(IsServer && TryGetComponent<RelayAvatarPlayer>(out var movement))movement.ServerPlace(feet,yaw);
+    }
     void RefreshPresentation(bool force)
     {
         if(force||collisionEnabled!=IsPresentInWorld){collisionEnabled=IsPresentInWorld;hitboxes.SetCollisionEnabled(collisionEnabled);}

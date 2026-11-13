@@ -361,6 +361,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::RelayRoomUI
   autoHostInEditor: 1
+  showDebugUI: 1
   maxJoiningPlayers: 3
 --- !u!114 &1118803129
 MonoBehaviour:
@@ -430,7 +431,7 @@ MonoBehaviour:
     Address: 127.0.0.1
     Port: 7777
     WebSocketPath: /
-    ServerListenAddress: 
+    ServerListenAddress: 127.0.0.1
     ClientBindPort: 0
   DebugSimulator:
     PacketDelayMS: 0

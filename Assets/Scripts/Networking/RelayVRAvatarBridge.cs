@@ -61,24 +61,8 @@ public sealed class RelayVRAvatarBridge : MonoBehaviour
         if (!networkAvatar)
             return;
 
-        ScoutAvatar original = binding.avatar;
-
-        // Copy the original working XR-controlled body pose.
-        networkPlayer.transform.SetPositionAndRotation(
-            original.transform.position,
-            original.transform.rotation);
-
-        // Preserve the existing headset and gun-grip poses.
-        networkAvatar.head.SetPositionAndRotation(
-            original.head.position,
-            original.head.rotation);
-
-        networkAvatar.leftHand.SetPositionAndRotation(
-            original.leftHand.position,
-            original.leftHand.rotation);
-
-        networkAvatar.rightHand.SetPositionAndRotation(
-            original.rightHand.position,
-            original.rightHand.rotation);
+        // Keep the local scene avatar instantaneously tracked, but never write
+        // the network mirror or its hitboxes from unvalidated owner transforms.
+        networkPlayer.PublishTrackedPose(binding);
     }
 }
