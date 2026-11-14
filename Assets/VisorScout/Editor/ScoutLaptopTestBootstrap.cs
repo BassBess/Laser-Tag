@@ -1,17 +1,49 @@
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
-// This editor-only setup affects only the explicitly owned Task 1 test scene.
-// It creates no serialized scene/prefab overrides and is absent from a player.
+// Opts the owned avatar and menu gameplay scenes into laptop height bounds.
+// The adapter independently guards against physical XR devices and displays.
 [InitializeOnLoad]
 public static class ScoutLaptopTestBootstrap
 {
-    static ScoutLaptopTestBootstrap() { EditorApplication.playModeStateChanged += Changed; }
+    const string MenuGameScene = "Assets/Scenes/RelayVRGame.unity";
+
+    static ScoutLaptopTestBootstrap()
+    {
+        EditorApplication.playModeStateChanged += Changed;
+        SceneManager.sceneLoaded += SceneLoaded;
+    }
+
     static void Changed(PlayModeStateChange state)
     {
-        if (state != PlayModeStateChange.EnteredPlayMode) return;
+        if (state == PlayModeStateChange.EnteredPlayMode)
+            ConfigureLoadedBindings();
+    }
+
+    static void SceneLoaded(Scene scene, LoadSceneMode mode)
+    {
+        if (Application.isPlaying && IsSupportedScene(scene.path))
+            ConfigureLoadedBindings();
+    }
+
+    static bool IsSupportedScene(string path)
+    {
+        return path == ScoutFirstPersonSetup.TestScene || path == MenuGameScene;
+    }
+
+    static void ConfigureLoadedBindings()
+    {
         foreach (var binding in Object.FindObjectsByType<ScoutLocalRigBinding>())
-            if (binding.gameObject.scene.path == ScoutFirstPersonSetup.TestScene && !binding.GetComponent<ScoutLaptopHeightBounds>())
-                binding.gameObject.AddComponent<ScoutLaptopHeightBounds>().binding = binding;
+        {
+            if (!IsSupportedScene(binding.gameObject.scene.path))
+                continue;
+
+            var bounds = binding.GetComponent<ScoutLaptopHeightBounds>();
+            if (!bounds)
+                bounds = binding.gameObject.AddComponent<ScoutLaptopHeightBounds>();
+
+            bounds.binding = binding;
+        }
     }
 }

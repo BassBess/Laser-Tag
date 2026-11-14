@@ -9,7 +9,7 @@ using UnityEngine.InputSystem;
 ///   - a thin, bright, almost-white "core" line (created automatically as a child)
 /// plus two soft glow sprites: one at the muzzle and one where the beam hits.
 ///
-/// - A dimmer "aim laser" is always visible so the player can see where they aim.
+/// - A small local aiming dot is available; the continuous aiming beam is off by default.
 /// - When the trigger is pressed, a bright, thick "shot beam" flashes and fades out.
 /// The beam stops at the first collider it hits (walls/cover block it), otherwise at maxDistance.
 ///
@@ -27,10 +27,14 @@ public class LaserRay : MonoBehaviour
 
     [Header("Ray")]
     [Tooltip("How far the laser reaches, in meters, if it doesn't hit anything.")]
-    public float maxDistance = 50f;
+    [Min(.1f)] public float maxDistance = 50f;
 
-    [Tooltip("Which layers the laser can hit. Untick your own player's layer so you can't shoot yourself.")]
+    [Tooltip("Which layers the laser can hit.")]
     public LayerMask hitLayers = ~0;
+
+    [Tooltip("The shooter's own player. The laser ignores every collider under it, so you can't shoot yourself. " +
+             "Leave empty to use the top object above this gun (e.g. XR Origin (VR)).")]
+    public Transform owner;
 
     [Header("Look")]
     [Tooltip("Color of the soft outer glow.")]
@@ -39,7 +43,12 @@ public class LaserRay : MonoBehaviour
     public Color coreColor = new Color(1f, 0.85f, 0.85f, 1f);
 
     [Header("Aim laser (always on)")]
-    public bool showAimLaser = true;
+    public bool showAimLaser = false;
+    [Tooltip("Small local aiming dot instead of a continuous beam.")]
+    public bool showAimDot = true;
+    [Min(.005f)] public float aimDotSize = .035f;
+    public Color aimDotColor = new Color(.35f, .85f, 1f, 1f);
+    [Range(0,1)] public float aimDotBrightness = .65f;
     [Tooltip("Width of the bright center line, in meters.")]
     public float aimCoreWidth = 0.004f;
     [Tooltip("Width of the soft red glow around it, in meters.")]
@@ -68,6 +77,10 @@ public class LaserRay : MonoBehaviour
     ///   GetComponent&lt;LaserRay&gt;().onHit += hit =&gt; { ... };
     /// </summary>
     public System.Action<RaycastHit> onHit;
+    public System.Func<bool> canFire;
+    public System.Action<Vector3, Vector3, bool> onFired;
+    [Tooltip("Other avatar roots owned by the shooter; never moved by this component.")]
+    public Transform ignoredAvatar, ignoredNetworkPlayer;
 
     // Shared generated textures (made once for all guns)
     static Texture2D glowTexture, coreTexture, spotTexture;
@@ -92,6 +105,9 @@ public class LaserRay : MonoBehaviour
             Debug.LogWarning($"{name}: LaserRay has no muzzle assigned, using the gun's own position.", this);
             muzzle = transform;
         }
+
+        if (owner == null)
+            owner = transform.root;
 
         CreateTextures();
 
@@ -135,33 +151,81 @@ public class LaserRay : MonoBehaviour
 
         InputAction action = fireAction.action;
         if (action != null && action.WasPressedThisFrame() && Time.time >= nextShotTime)
-            Fire();
+            TryFire();
 
         DrawBeam();
     }
 
-    /// <summary>Shoots an invisible ray from the muzzle and remembers where it stops.</summary>
+    static readonly RaycastHit[] rayHits = new RaycastHit[128];
+
+    /// <summary>
+    /// Shoots an invisible ray from the muzzle and remembers the first collider it reaches,
+    /// skipping colliders that belong to the shooter's own player.
+    /// </summary>
     void CastRay()
     {
         Vector3 origin = muzzle.position;
         Vector3 direction = muzzle.forward;
+        var game = LaserTagGameManager.Instance;
+        float range = Mathf.Min(Mathf.Max(.1f, maxDistance), game ? game.maxShotRange : maxDistance);
 
-        hasHit = Physics.Raycast(origin, direction, out currentHit, maxDistance,
-                                 hitLayers, QueryTriggerInteraction.Ignore);
+        int count = Physics.RaycastNonAlloc(origin, direction, rayHits, range,
+                                            hitLayers, QueryTriggerInteraction.Collide);
 
-        rayEnd = hasHit ? currentHit.point : origin + direction * maxDistance;
+        // Saturation is rare; retain the nearest cover rather than trust a truncated hit set.
+        var candidates = count == rayHits.Length ? Physics.RaycastAll(origin, direction, range, hitLayers, QueryTriggerInteraction.Collide) : rayHits;
+        if (candidates != rayHits) count = candidates.Length;
+        hasHit = false;
+        float closest = float.MaxValue;
+        for (int i = 0; i < count; i++)
+        {
+            RaycastHit hit = candidates[i];
+            if ((hit.collider.isTrigger && hit.collider.GetComponentInParent<PlayerHitboxes>() == null) ||
+                (ignoredAvatar && hit.collider.transform.IsChildOf(ignoredAvatar)) ||
+                (ignoredNetworkPlayer && hit.collider.transform.IsChildOf(ignoredNetworkPlayer)) ||
+                (owner != null && hit.collider.transform.IsChildOf(owner)))
+                continue; // our own body or gun: the laser passes through it
+
+            if (hit.distance < closest)
+            {
+                closest = hit.distance;
+                currentHit = hit;
+                hasHit = true;
+            }
+        }
+
+        rayEnd = hasHit ? currentHit.point : origin + direction * range;
     }
 
+    // The trigger and tests share the same gate, cooldown and raycast path.
+    public bool TryFire()
+    {
+        if (!isActiveAndEnabled || Time.time < nextShotTime || (canFire != null && !canFire())) return false;
+        CastRay(); Fire(); return true;
+    }
     void Fire()
     {
         shotTimer = shotDuration;
         nextShotTime = Time.time + cooldown;
+        onFired?.Invoke(muzzle.position, rayEnd, hasHit);
 
-        if (hasHit)
+        if (!hasHit)
+            return; // the beam reached maxDistance without touching any collider
+
+        // The ray reached a collider. Does it belong to a player?
+        PlayerHitboxes victim = currentHit.collider.GetComponentInParent<PlayerHitboxes>();
+        if (victim != null && victim.TryGetPart(currentHit.collider, out HitboxPart part))
         {
-            Debug.Log($"{name} hit {currentHit.collider.name} at {currentHit.distance:F2} m", currentHit.collider);
-            onHit?.Invoke(currentHit);
+            victim.ReportHit(this, part, currentHit);
         }
+        else
+        {
+            // A wall, a crate, the floor...: the shot is blocked and nobody is hit.
+            Debug.Log($"{name} shot blocked by {currentHit.collider.name} at {currentHit.distance:F2} m",
+                      currentHit.collider);
+        }
+
+        onHit?.Invoke(currentHit);
     }
 
     void DrawBeam()
@@ -201,12 +265,17 @@ public class LaserRay : MonoBehaviour
             PlaceGlow(muzzleGlow, muzzleGlowMat, muzzle.position, muzzleGlowSize * (0.6f + 0.4f * shot), shot);
 
         // Glowing spot where the beam hits a surface.
-        bool showHit = showHitGlow && visible && hasHit;
+        var me = RelayCombatPlayer.Local;
+        bool localAim = showAimDot && me && me.IsAlive && LocalPlayerRig.Instance &&
+            System.Array.IndexOf(LocalPlayerRig.Instance.guns, this) >= 0 &&
+            !LaserTag.Menu.MainMenuController.GameplayInputBlocked;
+        bool showHit = hasHit && ((showHitGlow && visible) || localAim);
         hitGlow.gameObject.SetActive(showHit);
         if (showHit)
         {
             Vector3 spot = currentHit.point + currentHit.normal * 0.01f;
-            PlaceGlow(hitGlow, hitGlowMat, spot, hitGlowSize * (0.5f + 0.5f * brightness), brightness);
+            PlaceGlow(hitGlow, hitGlowMat, spot, shot > .001f ? hitGlowSize * (0.5f + 0.5f * brightness) : aimDotSize, shot > .001f ? brightness : aimDotBrightness);
+            if (shot <= .001f) hitGlowMat.color = WithAlpha(aimDotColor, aimDotBrightness);
         }
     }
 
