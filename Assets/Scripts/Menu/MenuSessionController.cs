@@ -168,6 +168,7 @@ namespace LaserTag.Menu
             Manager.Shutdown();
             while (Manager.ShutdownInProgress || Manager.IsListening || Relay.Busy) yield return null;
             Lobby = null; RealLoadProgress = -1; sceneLoad = null;
+            ShotBeamFx.ClearSession();
             if (SceneManager.GetActiveScene().name != MenuScene)
             { var load = SceneManager.LoadSceneAsync(MenuScene); while (load != null && !load.isDone) yield return null; }
             Status = message; Leaving = false; expectedDisconnect = false;

@@ -51,7 +51,7 @@ public static class LaserTagFeedback
             source.rolloffMode=AudioRolloffMode.Linear;
             source.dopplerLevel=0;
             shotVoices[slot]=source;
-            Object.FindAnyObjectByType<LaserTag.Menu.MenuAudio>()?.TrackEffectsSource(source);
+            LaserTag.Menu.MenuAudio.Instance?.TrackEffectsSource(source);
         }
         source.Stop();
         source.transform.position=at;
@@ -81,7 +81,7 @@ public static class LaserTagFeedback
         source.maxDistance = 30f;
         source.rolloffMode = AudioRolloffMode.Linear;
         source.pitch = Random.Range(0.94f, 1.06f); // small variation so rapid fire doesn't sound robotic
-        Object.FindAnyObjectByType<LaserTag.Menu.MenuAudio>()?.TrackEffectsSource(source);
+        LaserTag.Menu.MenuAudio.Instance?.TrackEffectsSource(source);
         source.Play();
         Object.Destroy(go, clip.length + 0.1f);
     }

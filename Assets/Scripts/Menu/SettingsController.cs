@@ -24,6 +24,8 @@ namespace LaserTag.Menu
         // Editor Game view size is controlled by the Editor, not Screen.SetResolution.
         public static bool DesktopDisplaySupported => !Application.isEditor &&
             (Application.platform == RuntimePlatform.WindowsPlayer || Application.platform == RuntimePlatform.LinuxPlayer || Application.platform == RuntimePlatform.OSXPlayer) && !UnityEngine.XR.XRSettings.isDeviceActive;
+        public static bool SimulatorSettingsSupported => !UnityEngine.XR.XRSettings.isDeviceActive &&
+            (Application.isEditor || FindAnyObjectByType<XRInteractionSimulator>() != null);
         int defaultQuality;
         void Awake()
         {

@@ -10,6 +10,7 @@ public class ShotBeamFx : MonoBehaviour
     static readonly Stack<ShotBeamFx> pool = new Stack<ShotBeamFx>();
     static Material sharedMaterial;
     static Texture2D beamTexture;
+    static GameObject poolRoot;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
     static void ResetStatics() => pool.Clear();
@@ -36,9 +37,10 @@ public class ShotBeamFx : MonoBehaviour
 
     static ShotBeamFx Create()
     {
+        if(!poolRoot){poolRoot=new GameObject("Remote Shot Effects");DontDestroyOnLoad(poolRoot);}
         var go = new GameObject("Remote Shot Beam");
+        go.transform.SetParent(poolRoot.transform,false);
         go.layer = 2; // Ignore Raycast
-        DontDestroyOnLoad(go);
         var beam = go.AddComponent<ShotBeamFx>();
         beam.line = go.AddComponent<LineRenderer>();
         beam.line.positionCount = 2;
@@ -50,6 +52,14 @@ public class ShotBeamFx : MonoBehaviour
         beam.line.receiveShadows = false;
         beam.line.sharedMaterial = SharedMaterial();
         return beam;
+    }
+
+    public static void ClearSession()
+    {
+        pool.Clear();
+        if(poolRoot)Destroy(poolRoot);poolRoot=null;
+        if(sharedMaterial)Destroy(sharedMaterial);sharedMaterial=null;
+        if(beamTexture)Destroy(beamTexture);beamTexture=null;
     }
 
     static Material SharedMaterial()

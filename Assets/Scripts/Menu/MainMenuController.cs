@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -8,10 +8,22 @@ using UnityEngine.UI;
 
 namespace LaserTag.Menu
 {
-    // Screen-space uGUI keeps mouse navigation independent of the XR rig.
-    // Button events/session actions are separate so a future world-space/ray view can reuse them.
+    // Desktop uGUI and the headset world-space view share the same session actions.
     public sealed class MainMenuController : MonoBehaviour
     {
+        public static MainMenuController Instance { get; private set; }
+        public static bool GameplayInputBlocked => Instance && Instance.session && Instance.session.InGame &&
+            (Instance.panel != "Game" || (Instance.vrPresentation && Instance.vrPresentation.OpenPressedThisFrame) ||
+             (Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame));
+        MenuVrPresentation vrPresentation;
+        public bool OptionsOpen => session && session.InGame && panel != "Game";
+        string settingsReturnPage = "Home", pendingJoinCode = "";
+        string helpReturnPage = "Home";
+        void Awake() { if (GetComponent<MenuSessionController>() == MenuSessionController.Instance) Instance = this; }
+        void OnDestroy() { if (Instance == this) Instance = null; }
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetStatics() { Instance = null; }
+        public void ToggleOptions() { if (session && session.InGame) Show(panel == "Game" ? "Pause" : "Game"); }
         public Camera MenuCamera;
         MenuSessionController session;
         Canvas canvas;
@@ -32,6 +44,7 @@ namespace LaserTag.Menu
         {
             session = GetComponent<MenuSessionController>();
             if (MenuSessionController.Instance != session) return;
+            Instance = this; // All session Awakes have completed before Start.
             font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
             var root = new GameObject("Menu Canvas", typeof(RectTransform), typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
             root.transform.SetParent(transform, false); canvas = root.GetComponent<Canvas>();
@@ -54,6 +67,8 @@ namespace LaserTag.Menu
             scroll.verticalScrollbar=bar;scroll.verticalScrollbarVisibility=ScrollRect.ScrollbarVisibility.AutoHide;
             status = Label(root.transform, "",18,new Color(.62f,.79f,.87f)); Place(status.rectTransform,.145f,.035f,.88f,.15f); status.alignment = TextAnchor.UpperLeft;
             var events = new GameObject("Menu EventSystem",typeof(EventSystem),typeof(InputSystemUIInputModule)); events.transform.SetParent(transform,false); events.GetComponent<InputSystemUIInputModule>().AssignDefaultActions();
+            vrPresentation=gameObject.AddComponent<MenuVrPresentation>();
+            vrPresentation.Configure(this,canvas,events.GetComponent<EventSystem>(),MenuCamera);
             Show("Home");
         }
         void Update()
@@ -61,14 +76,14 @@ namespace LaserTag.Menu
             if (!canvas || !session) return;
             bool playing = session.InGame;
             if (MenuCamera) MenuCamera.gameObject.SetActive(UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == MenuSessionController.MenuScene);
-            if (playing && panel != "Game" && panel != "Pause") Show("Game");
-            if (playing && Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame) Show(panel == "Pause" ? "Game" : "Pause");
+            if (playing && panel != "Game" && panel != "Pause" && panel != "GameSettings" && panel != "GameHelp") Show("Game");
+            if (playing && Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame) ToggleOptions();
             if (panel == "Game" && playing) { canvas.enabled = false; return; }
             canvas.enabled = true;
             if (session.Leaving && panel != "Disconnecting") Show("Disconnecting");
             else if (!session.Leaving && session.Lobby && session.Lobby.Phase.Value != SessionPhase.Lobby && !playing && panel != "Loading") Show("Loading");
             else if (!session.Leaving && session.Lobby && session.Lobby.Phase.Value == SessionPhase.Lobby && panel != "Lobby") Show("Lobby");
-            else if (!session.Leaving && !session.Lobby && (panel == "Lobby" || panel == "Loading" || panel == "Disconnecting" || panel == "Pause" || panel == "Game")) Show("Play");
+            else if (!session.Leaving && !session.Lobby && (panel == "Lobby" || panel == "Loading" || panel == "Disconnecting" || panel == "Pause" || panel == "Game" || panel == "GameSettings" || panel == "GameHelp")) Show("Play");
             fade = Mathf.MoveTowards(fade,1,Time.unscaledDeltaTime*5); group.alpha = fade;
             status.text = Time.unscaledTime<noticeUntil?uiNotice:session.Status;
             if (session.Connecting) status.text = session.Status + new string('.', (int)(Time.unscaledTime*2)%4);
@@ -92,13 +107,15 @@ namespace LaserTag.Menu
             foreach (Transform child in content) { child.gameObject.SetActive(false); Destroy(child.gameObject); }
             content.anchoredPosition = Vector2.zero;
             if (page == "Home")
-            { Title("ENTER THE ARENA"); Note("Create a private room. Share the code. Ready up together."); Action("PLAY",()=>Show("Play")); Action("SETTINGS",()=>Show("Settings")); Action("HOW TO PLAY",()=>Show("Help")); Action("QUIT",Quit); }
+            { Title("ENTER THE ARENA"); Note("Create a private room. Share the code. Ready up together."); Action("PLAY",()=>Show("Play")); Action("SETTINGS",()=>OpenSettings("Home")); Action("HOW TO PLAY",()=>OpenHelp("Home")); Action("QUIT",Quit); }
             else if (page == "Play")
             {
                 Title("MULTIPLAYER"); Note("Host a Relay room or join with a six-character code.");
-                capacity = Choice("Maximum players (including host)",Enumerable.Range(2,7).Select(x=>x.ToString()).ToArray(),2);
+                capacity = Choice("Maximum players (including host)",Enumerable.Range(2,7).Select(x=>x.ToString()).ToArray(),3);
                 Action("HOST GAME",()=>session.Host(capacity.value+2));
-                joinCode = Field("Room code", "ABC123"); Action("JOIN GAME",()=>session.Join(joinCode.text));
+                joinCode = Field("Room code", "ABC123"); joinCode.text=pendingJoinCode;
+                Action("ROOM CODE KEYPAD",()=>{pendingJoinCode=joinCode.text;Show("CodePad");});
+                Action("JOIN GAME",()=>session.Join(joinCode.text));
                 Action("Cancel connection",()=>session.Leave("Connection cancelled.")); Action("BACK",()=>Show("Home"));
             }
             else if (page == "Lobby")
@@ -112,25 +129,58 @@ namespace LaserTag.Menu
             }
             else if (page == "Loading") { Title("DEPLOYING"); Note("Loading arena and synchronizing players."); Note("Your connection stays active. Please wait..."); Action("Return to menu",()=>session.Leave("Loading cancelled.")); }
             else if (page == "Disconnecting") { Title("DISCONNECTING"); Note("Closing the current connection..."); }
-            else if (page == "Pause") { Title("SESSION"); Note("The match continues while this menu is open."); Action("RESUME",()=>Show("Game")); Action("Return to menu",()=>session.Leave()); }
-            else if (page == "Help")
-            { Title("HOW TO PLAY"); Note("Host shares a room code. Each player joins, marks ready, and waits for the host to start. Two players are needed for a round.\n\nAim your controller guns and press their triggers. Both guns share 100 shots. Stop firing for two seconds to recharge. Cover blocks lasers; head and body hits each deal 10 damage.\n\nYou have 100 health and two lives. After your first tag-out, wait three seconds to respawn with brief protection. The last remaining player wins. Press right-controller A or Enter at the scoreboard to restart.\n\nLook down to see your torso and hands. Other players see your full avatar. Use the laptop simulator overlay for its existing controls. Escape opens the session menu and Return to Menu disconnects."); Action("BACK",()=>Show("Home")); }
-            else if (page == "Settings") BuildSettings();
+            else if (page == "Pause") { Title("SESSION"); Note("The match continues. Shooting and teleportation are blocked locally while options are open."); Action("RESUME",()=>Show("Game")); Action("SETTINGS",()=>OpenSettings("Pause")); Action("HOW TO PLAY",()=>OpenHelp("Pause")); Action("Return to menu",()=>session.Leave()); }
+            else if (page == "CodePad") BuildCodePad();
+            else if (page == "Help" || page == "GameHelp") BuildHelp();
+            else if (page == "Settings" || page == "GameSettings") BuildSettings();
+        }
+        void OpenSettings(string back) { settingsReturnPage=back;Show(back=="Pause"?"GameSettings":"Settings"); }
+        void OpenHelp(string back) { helpReturnPage=back;Show(back=="Pause"?"GameHelp":"Help"); }
+        void BuildHelp()
+        {
+            Title("HOW TO PLAY");Action("BACK",()=>Show(helpReturnPage));
+            Note("VR controls and default match rules. Scroll for all topics. The host's configured rules apply to everyone.");
+            Title("1 / JOIN THE MATCH");
+            Note("One player chooses PLAY > HOST GAME and shares the six-character room code. Other players choose JOIN GAME and enter it, using the room-code keypad if needed. Choose five slots for the five-player session. Everyone, including the host, must toggle READY. Only the host starts the match; at least two players are needed for a round. Wait for loading and the three-second countdown before shooting.");
+            Title("2 / TELEPORT, LOOK AND AIM");
+            Note("Use the LEFT hand for teleporting. Push the left thumbstick forward to display the arc, aim at a clear floor area, then release the stick to request the teleport. Cyan marks a valid preview; red means it is blocked. A cyan preview is not approval: the server can reject the request if the destination becomes occupied before landing. Walls, cover, prop tops, unsupported edges, steep slopes, excessive height changes and other players block landings. Teleporting is unavailable while dead or while options are open.");
+            Note("Look and turn naturally with your headset, and aim with your RIGHT controller. Stay inside your own cleared physical play area with Quest boundaries enabled. Use teleporting to travel through the virtual arena. Do not physically walk through virtual cover or rely on boundary warnings to clear your room.");
+            Note("Every player has a different LED color on their suit. A small matching name tag above each opponent identifies them; walls and cover can hide it. Your own name tag is hidden from your view.");
+            Title("3 / SHOOTING AND COVER");
+            Note("Aim the right-hand gun and pull the RIGHT TRIGGER for one shot. Release and pull again; the default cooldown is 0.25 seconds. The left hand is reserved for teleporting. Shots reach up to 50 metres. Solid cover stops lasers. You cannot hit yourself. Both head and body hits deal 10 damage; head hits have no extra damage bonus. A confirmed hit marker and sound mean damage was accepted. A beam alone does not guarantee a hit.");
+            Title("4 / AMMUNITION AND HEALTH");
+            Note("Start with 100 ammunition and 100 health. Each accepted shot costs one ammo. After two seconds without an accepted shot, ammo regenerates at eight shots per second, up to 100. There is no manual reload. Low ammo is highlighted; an empty gun clicks and cannot shoot. Empty trigger pulls do not postpone regeneration. Watch your health and ammo HUD, and move behind cover when under fire.");
+            Title("5 / LIVES AND RESPAWNING");
+            Note("Each player has two lives. At zero health you are tagged out and lose one life. After the first tag-out, wait three seconds to respawn at a clear, unoccupied spawn point with full health and ammo. If all spawns are blocked, respawning waits for space instead of placing you inside cover. You have two seconds of spawn protection; landing a validated hit ends your protection early. Shooting and teleporting are blocked while waiting to respawn. Losing your final life eliminates you until the next round.");
+            Title("6 / SCORING, WINNING AND RESTART");
+            Note("The last remaining player wins. The scoreboard shows finishing rank, kills, hits and deaths. Surviving longer ranks first; ties use more kills, then more hits, then fewer deaths. Tagging a player out counts as a kill, including a tag-out followed by a respawn. At game over, press the RIGHT controller A button to request a restart. A new round resets health, ammo, lives and round statistics. At least two connected players are required to restart.");
+            Title("7 / OPTIONS AND LEAVING");
+            Note("Use the left controller menu button to open session options. Point a controller ray at a button and use its trigger to select; use the thumbstick to scroll. Settings control master volume, music/ambience, sound effects, mute and graphics. The match keeps running while your options or help are open, but your firing and teleport inputs are blocked. Choose RESUME to return. RETURN TO MENU disconnects you. If the host leaves, the room closes for everyone; host or join a new room to play again. New players cannot join a match after loading starts.");
+            Action("BACK",()=>Show(helpReturnPage));
+        }
+        void BuildCodePad()
+        {
+            Title("ROOM CODE");var display=Note(pendingJoinCode);Note("Select six letters or digits, then DONE.");
+            var grid=new GameObject("Code keys",typeof(RectTransform),typeof(GridLayoutGroup),typeof(LayoutElement));grid.transform.SetParent(content,false);
+            var layout=grid.GetComponent<GridLayoutGroup>();layout.cellSize=new Vector2(70,44);layout.spacing=new Vector2(8,8);layout.constraint=GridLayoutGroup.Constraint.FixedColumnCount;layout.constraintCount=6;
+            grid.GetComponent<LayoutElement>().minHeight=304;
+            foreach(char c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") { char key=c;var button=Action(key.ToString(),()=>{if(pendingJoinCode.Length<6)pendingJoinCode+=key;display.text=pendingJoinCode;});button.transform.SetParent(grid.transform,false); }
+            Action("BACKSPACE",()=>{if(pendingJoinCode.Length>0)pendingJoinCode=pendingJoinCode.Substring(0,pendingJoinCode.Length-1);display.text=pendingJoinCode;});Action("DONE",()=>Show("Play"));
         }
         void BuildSettings()
         {
             var settings = GetComponent<SettingsController>(); var draft = settings.Copy(); Title("SETTINGS");
-            Slider master = Range("Master volume",draft.Master,0,1), fx = Range("Sound effects",draft.Effects,0,1), music = Range("Menu music",draft.Music,0,1);
+            Slider master = Range("Master volume",draft.Master,0,1), fx = Range("Sound effects",draft.Effects,0,1), music = Range("Music / ambience",draft.Music,0,1);
             Toggle mute = Check("Mute all audio",draft.Mute);
             Slider snap = settings.SupportsSnapTurn ? Range("Snap turn angle",draft.SnapAngle,15,90) : null;
             Dropdown quality = Choice("Graphics quality",QualitySettings.names,draft.Quality);
-            Slider sensitivity = Range("Simulator look sensitivity (mouse + keyboard)",draft.Sensitivity,.05f,.5f);
-            Note("Sensitivity applies only when the existing XR Interaction Simulator is present; it never changes headset tracking.");
+            Slider sensitivity = SettingsController.SimulatorSettingsSupported ? Range("Simulator look sensitivity (mouse + keyboard)",draft.Sensitivity,.05f,.5f) : null;
+            if(sensitivity)Note("Sensitivity applies only to the XR Interaction Simulator; it never changes headset tracking.");
             Dropdown mode = null, resolution = null;
             if (SettingsController.DesktopDisplaySupported)
             { mode = Choice("Display mode",new[]{"Windowed","Fullscreen"},draft.Fullscreen?1:0); resolution = Choice("Resolution",settings.ResolutionNames,settings.ResolutionIndex(draft.Width,draft.Height)); }
-            Action("APPLY",()=>{ draft.Master=master.value;draft.Effects=fx.value;draft.Music=music.value;draft.Mute=mute.isOn;draft.Quality=quality.value;draft.Sensitivity=sensitivity.value;if(snap)draft.SnapAngle=snap.value;if(mode){draft.Fullscreen=mode.value==1;var size=settings.ResolutionSizes[resolution.value];draft.Width=size.x;draft.Height=size.y;}settings.Apply(draft);Notify("Settings saved."); });
-            Action("RESET TO DEFAULTS",()=>{settings.Apply(settings.Defaults());Show("Settings");Notify("Default settings restored.");}); Action("BACK",()=>Show("Home"));
+            Action("APPLY",()=>{ draft.Master=master.value;draft.Effects=fx.value;draft.Music=music.value;draft.Mute=mute.isOn;draft.Quality=quality.value;if(sensitivity)draft.Sensitivity=sensitivity.value;if(snap)draft.SnapAngle=snap.value;if(mode){draft.Fullscreen=mode.value==1;var size=settings.ResolutionSizes[resolution.value];draft.Width=size.x;draft.Height=size.y;}settings.Apply(draft);Notify("Settings saved."); });
+            Action("RESET TO DEFAULTS",()=>{settings.Apply(settings.Defaults());Show(settingsReturnPage=="Pause"?"GameSettings":"Settings");Notify("Default settings restored.");}); Action("BACK",()=>Show(settingsReturnPage));
         }
         void Notify(string message){uiNotice=message;noticeUntil=Time.unscaledTime+3;}
         void Quit() {
@@ -176,7 +226,7 @@ namespace LaserTag.Menu
             var label=Note(title+"  "+value.ToString("0.00"));var image=Image(title,content,new Color(.07f,.17f,.23f));image.gameObject.AddComponent<LayoutElement>().minHeight=30;
             var slider=image.gameObject.AddComponent<Slider>();slider.minValue=min;slider.maxValue=max;
             var fill=Image("Fill",image.transform,cyan);Stretch(fill.rectTransform);slider.fillRect=fill.rectTransform;
-            var handle=Image("Handle",image.transform,Color.white);handle.rectTransform.sizeDelta=new Vector2(16,32);slider.handleRect=handle.rectTransform;slider.targetGraphic=handle;slider.value=value;slider.onValueChanged.AddListener(v=>label.text=title+"  "+v.ToString("0.00"));return slider;
+            var handle=Image("Handle",image.transform,Color.white);handle.rectTransform.anchorMin=handle.rectTransform.anchorMax=new Vector2(.5f,.5f);handle.rectTransform.sizeDelta=new Vector2(16,30);slider.handleRect=handle.rectTransform;slider.targetGraphic=handle;slider.value=value;slider.onValueChanged.AddListener(v=>label.text=title+"  "+v.ToString("0.00"));return slider;
         }
         Toggle Check(string title,bool value)
         {var image=Image(title,content,new Color(.06f,.17f,.23f));image.gameObject.AddComponent<LayoutElement>().minHeight=44;var toggle=image.gameObject.AddComponent<Toggle>();toggle.targetGraphic=image;var tick=Image("Selected",image.transform,cyan);Place(tick.rectTransform,.02f,.25f,.06f,.75f);toggle.graphic=tick;var label=Label(image.transform,title+(value?"  [ON]":"  [OFF]"),20,Color.white);Place(label.rectTransform,.09f,0,1,1);toggle.isOn=value;toggle.onValueChanged.AddListener(on=>label.text=title+(on?"  [ON]":"  [OFF]"));return toggle;}

@@ -26,6 +26,8 @@ public sealed class RelayCombatPlayer : NetworkBehaviour
     public Color shotColor = new Color(1,.1f,.08f), hitFlashColor = new Color(1,.08f,.05f), protectionColor = new Color(.3f,.7f,1);
     public float hitFlashSeconds = .35f;
     public NetworkVariable<FixedString32Bytes> DisplayName = new NetworkVariable<FixedString32Bytes>();
+    // Server-assigned free palette slot, retained for this player's session.
+    public NetworkVariable<byte> ColorSlot = new NetworkVariable<byte>();
     public NetworkVariable<int> Health = new NetworkVariable<int>(100), Ammo = new NetworkVariable<int>(100);
     public NetworkVariable<PlayerLifeState> LifeState = new NetworkVariable<PlayerLifeState>();
     public NetworkVariable<bool> InRound = new NetworkVariable<bool>();
@@ -86,13 +88,28 @@ public sealed class RelayCombatPlayer : NetworkBehaviour
     {
         All.Add(this);if(IsOwner)Local=this;
         Health.OnValueChanged+=HealthChanged;LifeState.OnValueChanged+=LifeChanged;AcknowledgedShot.OnValueChanged+=ShotAcknowledged;
-        if(IsServer){DisplayName.Value=new FixedString32Bytes("Player "+(OwnerClientId+1));Health.Value=maxHealth;ResetAmmoServer();}
+        if(IsServer)
+        {
+            int used=0;
+            foreach(var player in All)if(player!=this&&player.IsSpawned)used|=1<<player.ColorSlot.Value;
+            byte slot=0;while(slot<7&&(used&(1<<slot))!=0)slot++;
+            ColorSlot.Value=slot;
+            var displayName=new FixedString32Bytes("Player "+(OwnerClientId+1));
+            var menu=LaserTag.Menu.MenuSessionController.Instance;
+            if(menu&&menu.Lobby)foreach(var member in menu.Lobby.Members)
+                if(member.Id==OwnerClientId){displayName=member.Name;break;}
+            DisplayName.Value=displayName;Health.Value=maxHealth;ResetAmmoServer();
+        }
         if(TryGetComponent<PlayerIdentity>(out var identity))identity.Initialize((int)OwnerClientId+1,Name);
         if(IsServer&&LaserTagGameManager.Instance)LaserTagGameManager.Instance.ServerOnPlayerJoined(this);
         RefreshPresentation(true);
+        var label=GetComponent<RelayPlayerPresentation>();
+        if(!label)label=gameObject.AddComponent<RelayPlayerPresentation>();
+        label.Initialize(this);
     }
     public override void OnNetworkDespawn()
     {
+        var label=GetComponent<RelayPlayerPresentation>();if(label)Destroy(label);
         All.Remove(this);if(Local==this)Local=null;
         Health.OnValueChanged-=HealthChanged;LifeState.OnValueChanged-=LifeChanged;AcknowledgedShot.OnValueChanged-=ShotAcknowledged;
         if(IsServer&&LaserTagGameManager.Instance)LaserTagGameManager.Instance.ServerOnPlayerLeft(this);

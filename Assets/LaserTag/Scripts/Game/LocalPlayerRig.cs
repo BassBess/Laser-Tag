@@ -129,9 +129,10 @@ public class LocalPlayerRig : MonoBehaviour
 
     bool CanFire(LaserRay gun, LaserTagFeedback.Hand hand)
     {
-        // Right-hand weapon only. Left controller is reserved for teleportation.
-        if (hand == LaserTagFeedback.Hand.Left)
-            return false;
+        // Team control scheme: left hand teleports, right trigger fires.
+        if (hand == LaserTagFeedback.Hand.Left) return false;
+        // UI owns triggers while options are open; the network match continues.
+        if (LaserTag.Menu.MainMenuController.GameplayInputBlocked) return false;
         RelayCombatPlayer me = RelayCombatPlayer.Local;
         if (me == null || !me.CanShoot) return false;
         if (Ammo <= 0)

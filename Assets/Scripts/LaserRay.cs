@@ -193,7 +193,7 @@ public class LaserRay : MonoBehaviour
     // The trigger and tests share the same gate, cooldown and raycast path.
     public bool TryFire()
     {
-        if (Time.time < nextShotTime || (canFire != null && !canFire())) return false;
+        if (!isActiveAndEnabled || Time.time < nextShotTime || (canFire != null && !canFire())) return false;
         CastRay(); Fire(); return true;
     }
     void Fire()

@@ -70,6 +70,7 @@ public class LaserTagGameManager : NetworkBehaviour
     InputAction fallbackStartAction;
     readonly List<Vector3> reserved = new List<Vector3>();
     readonly List<RelayCombatPlayer> scratch = new List<RelayCombatPlayer>();
+    int roundParticipantCount;
 
     public double ServerNow => NetworkManager != null ? NetworkManager.ServerTime.Time : 0d;
 
@@ -146,7 +147,7 @@ public class LaserTagGameManager : NetworkBehaviour
         if (!IsSpawned) return;
 
         InputAction action = fallbackStartAction ?? startAction.action;
-        if (action != null && action.WasPressedThisFrame() &&
+        if (!LaserTag.Menu.MainMenuController.GameplayInputBlocked && action != null && action.WasPressedThisFrame() &&
             (Phase.Value == GamePhase.Lobby || Phase.Value == GamePhase.GameOver))
             RequestStartRpc();
 
@@ -255,21 +256,29 @@ public class LaserTagGameManager : NetworkBehaviour
             p.Placement.Value = 0;
             p.RespawnAt.Value = 0;
             p.serverLastHitTime = -999f;
-            PlaceAtFreeSpawn(p);
+            if(!PlaceAtFreeSpawn(p)) { p.InRound.Value=false;p.LifeState.Value=PlayerLifeState.Spectating; }
+        }
+        if(scratch.Exists(p=>!p.InRound.Value))
+        {
+            foreach(var p in scratch) p.InRound.Value=false;
+            Phase.Value=GamePhase.Lobby;
+            SystemMessageRpc(new FixedString64Bytes("No clear spawn for everyone. Round waiting; retry Start."));
+            return;
         }
         foreach (RelayCombatPlayer p in scratch) p.LifeState.Value = PlayerLifeState.Alive;
+        roundParticipantCount=scratch.Count;
 
         RoundNumber.Value++;
         Phase.Value = GamePhase.Countdown;
         PhaseEndsAt.Value = ServerNow + startCountdown;
     }
 
-    void PlaceAtFreeSpawn(RelayCombatPlayer p)
+    bool PlaceAtFreeSpawn(RelayCombatPlayer p)
     {
-        if (spawnManager == null) return;
-        Vector3 feet = spawnManager.FindSpawn(p, reserved, out float yaw);
+        if (spawnManager == null || !spawnManager.TryFindSpawn(p,reserved,out Vector3 feet,out float yaw)) return false;
         reserved.Add(feet);
         p.ServerTeleport(feet, yaw);
+        return true;
     }
 
     // =====================================================================================
@@ -299,7 +308,7 @@ public class LaserTagGameManager : NetworkBehaviour
 
     void ServerRespawn(RelayCombatPlayer p)
     {
-        PlaceAtFreeSpawn(p);
+        if(!PlaceAtFreeSpawn(p)) { p.RespawnAt.Value=ServerNow+.5; return; }
         p.Health.Value = p.maxHealth;
         p.ResetAmmoServer();
         p.ProtectedUntil.Value = ServerNow + spawnProtection;
@@ -310,7 +319,9 @@ public class LaserTagGameManager : NetworkBehaviour
     {
         int participants = Participants;
         int left = PlayersLeft;
-        bool over = participants >= 2 ? left <= 1 : left == 0;
+        // A disconnect must not turn a multiplayer round into an endless solo
+        // round. Solo developer rounds still run until their participant is out.
+        bool over = roundParticipantCount >= 2 ? left <= 1 : left == 0;
         if (!over) return;
 
         foreach (RelayCombatPlayer p in RelayCombatPlayer.All)
@@ -438,7 +449,7 @@ public class LaserTagGameManager : NetworkBehaviour
             p.InRound.Value = false;
             p.LifeState.Value = PlayerLifeState.Alive;
             reserved.Clear();
-            PlaceAtFreeSpawn(p); // never start inside someone else
+            if(!PlaceAtFreeSpawn(p))p.LifeState.Value=PlayerLifeState.Spectating;
         }
         else
         {

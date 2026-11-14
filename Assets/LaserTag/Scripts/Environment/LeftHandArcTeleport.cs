@@ -47,7 +47,7 @@ public sealed class LeftHandArcTeleport : MonoBehaviour
     public Collider[] additionalWalkableSurfaces = new Collider[0];
     [Header("Temporary teleport diagnostics")]
     [Tooltip("Throttled rejection logs in Editor/Development builds only. Disable after arena validation.")]
-    public bool teleportDiagnostics = true;
+    public bool teleportDiagnostics;
 
     InputAction leftStick;
     LineRenderer arc;
@@ -264,7 +264,8 @@ public sealed class LeftHandArcTeleport : MonoBehaviour
         var game = LaserTagGameManager.Instance;
         if(player && !networkMovement)networkMovement=player.GetComponent<RelayAvatarPlayer>();
         reason=null;
-        if(!Application.isFocused)reason="Client/application not focused";
+        if(LaserTag.Menu.MainMenuController.GameplayInputBlocked)reason="Client/options open";
+        else if(!Application.isFocused)reason="Client/application not focused";
         else if(!xrOrigin || !xrOrigin.gameObject.activeInHierarchy)reason="Client/active rig unavailable";
         else if(!playerCamera || !leftController || !leftController.gameObject.activeInHierarchy)reason="Client/camera or left controller unavailable";
         else if(!player || !player.IsOwner || !player.IsSpawned)reason="Client/owned player unavailable";

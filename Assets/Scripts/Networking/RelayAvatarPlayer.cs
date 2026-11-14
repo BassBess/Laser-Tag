@@ -9,7 +9,8 @@ using Unity.Netcode;
 [RequireComponent(typeof(NetworkObject), typeof(AvatarPoseDriver), typeof(ScoutAvatar))]
 public sealed class RelayAvatarPlayer : NetworkBehaviour
 {
-    public const ushort MovementProtocolVersion = 3;
+    // Version 4 adds the server-assigned player color to the combat snapshot.
+    public const ushort MovementProtocolVersion = 4;
     // Retained serialized desktop settings; continuous translation stays disabled.
     public float speed = 2.2f, sprintMultiplier = 1.6f, turnSpeed = 100f, poseSendHz = 15f;
     [Header("Server tracking envelope (metres, relative to physical tracking origin)")]
@@ -69,6 +70,7 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
     public bool UseXRTracking { get; private set; }
     public bool TeleportPending => requestPending;
     public uint OriginRevision => state.Value.Revision;
+    public bool ServerTrackingReady => hasServerTracking;
     public Vector3 ServerFeet => state.Value.Origin + Rotation * Horizontal(state.Value.Tracking.Eye);
     // Kept for diagnostics/compatibility; occupancy no longer reserves this history.
     public Vector3 ReservedLanding => state.Value.Landing;

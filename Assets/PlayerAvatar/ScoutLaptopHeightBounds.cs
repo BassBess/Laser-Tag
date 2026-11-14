@@ -8,7 +8,8 @@ using UnityEngine.XR.Interaction.Toolkit.Inputs.Simulation;
 using System.Collections.Generic;
 #endif
 
-// Opt-in editor test adapter. Filters the simulator's requested Y translation;
+// Opt-in editor test adapter. Bounds synthetic Y input and blocks head WASD in
+// the teleport-only arena; controller pose adjustment remains available. It
 // never writes camera, origin, controller or gun transforms, or package assets.
 [DefaultExecutionOrder(-30000), DisallowMultipleComponent]
 public sealed class ScoutLaptopHeightBounds : MonoBehaviour
@@ -23,6 +24,23 @@ public sealed class ScoutLaptopHeightBounds : MonoBehaviour
     XRInteractionSimulator simulator;
     XRInputValueReader<float> reader;
     IXRInputValueReader<float> previous;
+    PlanarReader planarX, planarZ;
+    // Only the final teleport-only arena opts into this. Controllers remain
+    // independently adjustable; no input assets or tracked transforms change.
+    sealed class PlanarReader : IXRInputValueReader<float>
+    {
+        public ScoutLaptopHeightBounds owner;
+        public XRInputValueReader<float> reader;
+        public IXRInputValueReader<float> previous;
+        public float ReadValue()
+        {
+            if(owner.SyntheticOnly() && (owner.simulator.currentState.manipulatingFPS || owner.simulator.currentState.manipulatingHMD)) return 0;
+            return previous!=null?previous.ReadValue():reader.ReadValue();
+        }
+        public bool TryReadValue(out float value){value=ReadValue();return true;}
+        public void Release(){if(ReferenceEquals(reader.bypass,this))reader.bypass=previous;}
+    }
+    public bool IsPlanarFiltering => planarX!=null && planarZ!=null && SyntheticOnly();
     bool originalAuto, calibratedByAdapter;
     float originalHeight;
     readonly List<XRDisplaySubsystem> displays = new List<XRDisplaySubsystem>();
@@ -59,6 +77,12 @@ public sealed class ScoutLaptopHeightBounds : MonoBehaviour
         // must not make the initial standing pose look like a crouch.
         calibratedByAdapter = originalHeight <= 0;
         if (calibratedByAdapter) { binding.standingEyeHeight = initialHeight; binding.calibrateStandingHeightOnStart = false; }
+        if(binding.gameObject.scene.path=="Assets/Scenes/RelayVRGame.unity")
+        {
+            planarX=new PlanarReader{owner=this,reader=simulator.translateXInput,previous=simulator.translateXInput.bypass};
+            planarZ=new PlanarReader{owner=this,reader=simulator.translateZInput,previous=simulator.translateZInput.bypass};
+            simulator.translateXInput.bypass=planarX;simulator.translateZInput.bypass=planarZ;
+        }
     }
     public float ReadValue()
     {
@@ -79,6 +103,7 @@ public sealed class ScoutLaptopHeightBounds : MonoBehaviour
     void OnDisable() { Release(); }
     void Release()
     {
+        planarX?.Release();planarZ?.Release();planarX=planarZ=null;
         if (reader == null) return;
         if (ReferenceEquals(reader.bypass, this)) reader.bypass = previous;
         if (binding && calibratedByAdapter) { binding.calibrateStandingHeightOnStart = originalAuto; binding.standingEyeHeight = originalHeight; }

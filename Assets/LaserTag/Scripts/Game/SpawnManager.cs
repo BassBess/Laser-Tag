@@ -42,10 +42,11 @@ public class SpawnManager : MonoBehaviour
     }
 
     /// <summary>Finds a free spot for <paramref name="player"/>. <paramref name="reserved"/> are spots already given out.</summary>
-    public Vector3 FindSpawn(RelayCombatPlayer player, IList<Vector3> reserved, out float yaw)
+    public bool TryFindSpawn(RelayCombatPlayer player, IList<Vector3> reserved, out Vector3 feet, out float yaw)
     {
-        ignore.Clear();
-        if (player != null) ignore.Add(player.transform);
+        feet=default; yaw=0;
+        TeleportClearance.LocalPlayerRoots(ignore);
+        if (player != null && !ignore.Contains(player.transform)) ignore.Add(player.transform);
 
         // Try the predetermined points in random order.
         order.Clear();
@@ -57,7 +58,7 @@ public class SpawnManager : MonoBehaviour
             if (point != null && IsFree(point.transform.position, player, reserved))
             {
                 yaw = point.Yaw;
-                return point.transform.position;
+                feet=point.transform.position; return true;
             }
         }
 
@@ -75,34 +76,27 @@ public class SpawnManager : MonoBehaviour
                 if (IsFree(hit.point, player, reserved, floor))
                 {
                     yaw = Random.Range(0f, 360f);
-                    return hit.point;
+                    feet=hit.point; return true;
                 }
             }
         }
 
-        // Last resort: the spawn point farthest from everybody.
-        yaw = 0f;
-        Vector3 best = transform.position;
-        float bestScore = float.NegativeInfinity;
-        foreach (LaserTagSpawnPoint point in spawnPoints)
-        {
-            if (point == null) continue;
-            float score = DistanceToNearestPlayer(point.transform.position, player, reserved);
-            if (score > bestScore)
-            {
-                bestScore = score;
-                best = point.transform.position;
-                yaw = point.Yaw;
-            }
-        }
-        Debug.LogWarning("SpawnManager: every spawn point is occupied, using the least crowded one.", this);
-        return best;
+        // Fail closed. The round waits, or a dead player retries respawning;
+        // occupancy and wall clearance never become optional under load.
+        return false;
     }
 
     public bool IsFree(Vector3 feet, RelayCombatPlayer player, IList<Vector3> reserved, Collider floor = null)
     {
-        return TeleportClearance.IsFarFromPlayers(feet, minDistanceToPlayers, player, reserved) &&
-               TeleportClearance.IsBodySpaceFree(feet, bodyRadius, bodyHeight, floor, ignore);
+        var rig=LocalPlayerRig.Instance;
+        var settings=rig?rig.GetComponent<LeftHandArcTeleport>():null;
+        var movement=player?player.GetComponent<RelayAvatarPlayer>():null;
+        float height=bodyHeight;
+        if(movement)height=Mathf.Max(height,(movement.ServerTrackingReady?
+            movement.ServerEye.y-movement.ServerFeet.y:movement.maximumHeadHeight)+.1f);
+        return settings && TeleportClearance.IsSpawnSupported(settings,feet,bodyRadius,ignore) &&
+               TeleportClearance.IsFarFromPlayers(feet, minDistanceToPlayers, player, reserved) &&
+               TeleportClearance.IsBodySpaceFree(feet, bodyRadius, height, floor, ignore);
     }
 
     static float DistanceToNearestPlayer(Vector3 feet, RelayCombatPlayer except, IList<Vector3> reserved)

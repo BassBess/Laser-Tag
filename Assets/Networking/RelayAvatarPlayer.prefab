@@ -853,6 +853,12 @@ MonoBehaviour:
   sprintMultiplier: 1.6
   turnSpeed: 100
   poseSendHz: 15
+  roomScaleRadius: 2
+  maximumHeadHeight: 2.6
+  maximumHandReach: 1.65
+  maximumHeadSpeed: 3
+  trackingSlack: 0.15
+  teleportRequestInterval: 0.25
 --- !u!114 &168832847814498041
 MonoBehaviour:
   m_ObjectHideFlags: 0

@@ -259,6 +259,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 245a22a975f67114985c43fbcc9e7654, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::LaserTag.Menu.MenuAudio
+  gameplayAmbience: {fileID: 8300000, guid: 367d8c52ee1e5f4418f42261d090c04b, type: 3}
 --- !u!114 &1841325643
 MonoBehaviour:
   m_ObjectHideFlags: 0

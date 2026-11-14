@@ -61,7 +61,9 @@ public static class TeleportClearance
         foreach (RelayCombatPlayer player in RelayCombatPlayer.All)
         {
             if (player == null || player == except || !player.IsPresentInWorld || !player.HasPose) continue;
-            if (HorizontalSqrDistance(player.FeetPosition, feet) < minSqr) return false;
+            var movement=player.GetComponent<RelayAvatarPlayer>();
+            Vector3 occupied=movement && movement.OriginRevision!=0?movement.ServerFeet:player.FeetPosition;
+            if (HorizontalSqrDistance(occupied, feet) < minSqr) return false;
         }
         if (reserved != null)
             foreach (Vector3 point in reserved)
@@ -293,6 +295,16 @@ public static class TeleportClearance
             rejection=new Rejection(RejectionCode.SurfaceNotEligible,obstruction.collider,point);
         else if(rejection.Code==RejectionCode.None)rejection=new Rejection(RejectionCode.UnsupportedFootprint,null,point);
         rejection.Probe=point;return false;
+    }
+    public static bool IsSpawnSupported(LeftHandArcTeleport settings,Vector3 feet,float radius,IList<Transform> roots)
+    {
+        if(!settings)return false;
+        float tolerance=radius*Mathf.Tan(settings.maxFloorSlope*Mathf.Deg2Rad)+.08f;
+        return Support(settings,feet,.08f,roots,out _) &&
+            Support(settings,feet+Vector3.right*radius,tolerance,roots,out _) &&
+            Support(settings,feet-Vector3.right*radius,tolerance,roots,out _) &&
+            Support(settings,feet+Vector3.forward*radius,tolerance,roots,out _) &&
+            Support(settings,feet-Vector3.forward*radius,tolerance,roots,out _);
     }
     public static bool TryValidateLanding(LeftHandArcTeleport settings,RaycastHit hit,Vector3 feet,float eyeHeight,
         IList<Transform> roots,RelayCombatPlayer except,out Rejection rejection)
