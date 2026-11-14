@@ -112,7 +112,7 @@ public static class TeleportClearance
     public enum RejectionCode
     {
         None, QuerySaturated, NoArcLanding, ArcPathRangeLimit, Range, Height, Slope, SurfaceNotEligible,
-        UnsupportedFootprint, SupportHeight, BodyBlocked, PlayerOccupied, SourceInsideCover, SourceOccluded, OutsideArena
+        UnsupportedFootprint, SupportHeight, BodyBlocked, PlayerOccupied, SourceInsideCover, SourceOccluded
     }
     public struct Rejection
     {
@@ -181,7 +181,7 @@ public static class TeleportClearance
         {
             if (!marker.isActiveAndEnabled || marker.surfaces==null || marker.gameObject.scene != settings.gameObject.scene) continue;
             foreach (var collider in marker.surfaces)
-                if (StaticEnvironment(collider,settings) && !collider.GetComponentInParent<ArenaBoundary>())
+                if (StaticEnvironment(collider,settings))
                 { walkable.Add(collider); approved[collider]=marker; }
         }
         var spawns=SpawnManager.Instance;
@@ -202,12 +202,7 @@ public static class TeleportClearance
     {
         EnsureSurfaces(settings);
         return settings && c && c.enabled && c.gameObject.activeInHierarchy && !c.isTrigger &&
-            c.gameObject.layer!=2 && !c.GetComponentInParent<ArenaBoundary>() && walkable.Contains(c);
-    }
-    public static bool AllowsHealthPickup(LeftHandArcTeleport settings, Collider collider)
-    {
-        EnsureSurfaces(settings);
-        return !approved.TryGetValue(collider,out var marker) || (!marker.stairTreads && marker.allowHealthPickups);
+            c.gameObject.layer!=2 && walkable.Contains(c);
     }
     static float StairRise(Collider collider)
         => collider && approved.TryGetValue(collider,out var marker) && marker.stairTreads ? Mathf.Clamp(marker.maximumStepRise,.05f,.35f) : 0;
@@ -250,7 +245,6 @@ public static class TeleportClearance
         forward.Normalize();Vector3 start=controller+forward*.08f;
         Vector3 velocity=forward*settings.launchSpeed+Vector3.up*settings.upwardBoost;
         Vector3 previous=start;if(positions!=null)positions[0]=start;
-        if(!ArenaBoundary.Allows(start)){rejection=new Rejection(RejectionCode.OutsideArena,null,start);return false;}
         float traveled=0;
         for(int step=1;step<=Mathf.Clamp(settings.segments,8,100);step++)
         {
@@ -259,7 +253,6 @@ public static class TeleportClearance
             Vector3 delta=next-previous;float length=delta.magnitude;
             if(length<.0001f)continue;
             traveled+=length;
-            if (!ArenaBoundary.Allows(next)) { rejection=new Rejection(RejectionCode.OutsideArena,null,next); return false; }
             if(traveled>settings.maxRange){rejection=new Rejection(RejectionCode.ArcPathRangeLimit);return false;}
             if(Nearest(previous,delta/length,length,roots,out landing,out rejection))
             {
@@ -275,7 +268,6 @@ public static class TeleportClearance
     public static bool TryValidateSource(Vector3 eye,Vector3 controller,Vector3 forward,IList<Transform> roots,out Rejection rejection)
     {
         rejection=default;Vector3 start=controller+forward.normalized*.08f;
-        if(!ArenaBoundary.Allows(start)){rejection=new Rejection(RejectionCode.OutsideArena,null,start);return false;}
         int count=Physics.OverlapSphereNonAlloc(start,.03f,overlapBuffer,Physics.AllLayers,QueryTriggerInteraction.Ignore);
         if(count==overlapBuffer.Length){rejection=new Rejection(RejectionCode.QuerySaturated);return false;}
         for(int i=0;i<count;i++)if(Solid(overlapBuffer[i],roots))
@@ -317,7 +309,7 @@ public static class TeleportClearance
     }
     public static bool IsSpawnSupported(LeftHandArcTeleport settings,Vector3 feet,float radius,IList<Transform> roots)
     {
-        if(!settings || !ArenaBoundary.Allows(feet,radius))return false;
+        if(!settings)return false;
         float tolerance=radius*Mathf.Tan(settings.maxFloorSlope*Mathf.Deg2Rad)+.08f;
         return Support(settings,feet,.08f,roots,out _) &&
             Support(settings,feet+Vector3.right*radius,tolerance,roots,out _) &&
@@ -329,7 +321,6 @@ public static class TeleportClearance
         IList<Transform> roots,RelayCombatPlayer except,out Rejection rejection)
     {
         rejection=default;
-        if (!ArenaBoundary.Allows(hit.point,settings.bodyRadius)) { rejection=new Rejection(RejectionCode.OutsideArena,hit.collider,hit.point); return false; }
         if(!hit.collider){rejection=new Rejection(RejectionCode.NoArcLanding);return false;}
         if(Vector3.Distance(feet,hit.point)>settings.maxRange){rejection=new Rejection(RejectionCode.Range,hit.collider);return false;}
         if(Mathf.Abs(feet.y-hit.point.y)>settings.maxVerticalChange){rejection=new Rejection(RejectionCode.Height,hit.collider);return false;}
@@ -386,7 +377,6 @@ public static class TeleportClearance
         if(!settings){reason="Tracking/server teleport configuration missing";return false;}
         ServerRoots(player);
         Vector3 feet=new Vector3(next.x,player.ServerFeet.y,next.z);
-        if(!ArenaBoundary.Allows(feet,.1f)){reason="Tracking/OutsideArena";return false;}
         if(!Support(settings,feet,.08f,serverIgnore,out var support))
         {reason="Tracking/floor: "+support;return false;}
         const float headRadius=.10f;
@@ -406,7 +396,6 @@ public static class TeleportClearance
     {
         approved=default;reason=null;
         if(!player || !player.IsServer){reason="Server authority unavailable";return false;}
-        if(!ArenaBoundary.Allows(proposed)){reason="OutsideArena: proposed teleport destination";return false;}
         if(!RelayAvatarPlayer.Finite(proposed)){reason="Non-finite destination";return false;}
         var rig=LocalPlayerRig.Instance;var settings=rig?rig.GetComponent<LeftHandArcTeleport>():null;
         if(!settings || !SpawnManager.Instance){reason="Server arena configuration missing";return false;}

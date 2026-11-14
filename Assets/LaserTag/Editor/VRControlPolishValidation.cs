@@ -25,12 +25,24 @@ public static class VRControlPolishValidation
             check(Vector3.Distance(pivot,after)<.002f,"tracked eye pivot drifts at "+hz+"Hz");
             check(Mathf.Abs(Mathf.DeltaAngle(yaw,217))<.01f,"frame independent angular speed");
         }
-        for(int used=0;used<=7;used++)
-            check(RelayAvatarPlayer.ChargesAt(used,7,14,10)==7-used,"burst count "+used);
-        check(RelayAvatarPlayer.ChargesAt(7,7,14,13.999)==0,"eighth teleport remains locked");
-        check(RelayAvatarPlayer.ChargesAt(7,7,14,14)==7,"cooldown deadline restores charges");
-        check(RelayAvatarPlayer.ChargesAt(3,7,14,14)==7,"idle deadline restores partial burst");
-        check(RelayAvatarPlayer.ChargesAt(9,7,14,12)==0,"no negative charges");
+        var defaults = new GameObject("Teleport budget validation");
+        try
+        {
+            var movement = defaults.AddComponent<RelayAvatarPlayer>();
+            check(movement.teleportBurstLimit==15,"15 teleport default");
+            check(movement.teleportIdleReset==2.5f && movement.teleportCooldown==2.5f,"both recharge defaults");
+            for(int used=0;used<=15;used++)
+                check(RelayAvatarPlayer.ChargesAt(used,15,12.5,10)==15-used,"burst count "+used);
+            foreach(int used in new[]{3,15})
+            {
+                check(RelayAvatarPlayer.ChargesAt(used,15,12.5,12.499)==15-used,"before reset deadline");
+                check(RelayAvatarPlayer.ChargesAt(used,15,12.5,12.5)==15,"2.5 second reset deadline");
+            }
+            check(RelayAvatarPlayer.ChargesAt(17,15,12.5,12)==0,"no negative charges");
+            var prefab=AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Networking/RelayAvatarPlayer.prefab").GetComponent<RelayAvatarPlayer>();
+            check(prefab.teleportBurstLimit==15 && prefab.teleportIdleReset==2.5f && prefab.teleportCooldown==2.5f,"serialized budget");
+        }
+        finally { UnityEngine.Object.DestroyImmediate(defaults); }
         Debug.Log("VR_CONTROL_POLISH_CHECKS_PASSED checks="+checks);
     }
     public static void ValidateInBatch()
