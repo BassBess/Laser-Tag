@@ -123,6 +123,7 @@ public sealed class HealthPickupSystem : MonoBehaviour
             if (!TeleportClearance.TryValidateSource(source+Vector3.up*1.6f,hand,forward,ignore,out _)) continue;
             if (!TeleportClearance.TryTraceArc(teleport,hand,forward,ignore,null,out _,out var landing,out _)) continue;
             if (!TeleportClearance.TryValidateLanding(teleport,landing,source,1.7f,ignore,null,out _)) continue;
+            if (!TeleportClearance.AllowsHealthPickup(teleport,landing.collider)) continue;
             if (!TeleportClearance.IsSpawnSupported(teleport,landing.point,teleport.bodyRadius,ignore)) continue;
             if (!TeleportClearance.IsFarFromPlayers(landing.point,minimumPlayerDistance)) continue;
             bool spaced = true;

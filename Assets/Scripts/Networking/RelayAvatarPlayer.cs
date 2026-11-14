@@ -9,8 +9,8 @@ using Unity.Netcode;
 [RequireComponent(typeof(NetworkObject), typeof(AvatarPoseDriver), typeof(ScoutAvatar))]
 public sealed class RelayAvatarPlayer : NetworkBehaviour
 {
-    // Version 5 adds authoritative snap-turn requests.
-    public const ushort MovementProtocolVersion = 5;
+    // Version 6 adds bounded continuous turn deltas and server teleport charges.
+    public const ushort MovementProtocolVersion = 6;
     // Retained serialized desktop settings; continuous translation stays disabled.
     public float speed = 2.2f, sprintMultiplier = 1.6f, turnSpeed = 100f, poseSendHz = 15f;
     [Header("Server tracking envelope (metres, relative to physical tracking origin)")]
@@ -67,7 +67,24 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
     double lastPoseAt, nextRequestAt, tokenAt, nextDiagnostic;
     float nextTeleportDiagnostic;
     float poseTokens = 3;
+    [Header("Teleport burst (server authority)")]
+    [Min(1)] public int teleportBurstLimit = 7;
+    [Min(.1f)] public float teleportIdleReset = 4f, teleportCooldown = 4f;
+    [Range(.15f,.2f)] public float turnDeadzone = .18f;
+    readonly NetworkVariable<int> teleportUsed = new NetworkVariable<int>();
+    readonly NetworkVariable<double> teleportResetAt = new NetworkVariable<double>(-1000);
+    double turnTokenAt;
+    float turnTokens, queuedTurn, nextTurnSend, turnPacketTokens=3;
+    uint turnSequence, serverTurnSequence;
     bool turnNeedsNeutral = true;
+    double ServerNow => NetworkManager ? NetworkManager.ServerTime.Time : 0;
+    public int TeleportCapacity => Mathf.Max(1,teleportBurstLimit);
+    public static int ChargesAt(int used,int capacity,double resetAt,double now)
+        => now>=resetAt?Mathf.Max(1,capacity):Mathf.Max(0,Mathf.Max(1,capacity)-used);
+    public int TeleportCharges => ChargesAt(teleportUsed.Value,TeleportCapacity,teleportResetAt.Value,ServerNow);
+    public float TeleportRechargeSeconds => TeleportCharges > 0 ? 0 : Mathf.Max(0,(float)(teleportResetAt.Value-ServerNow));
+    void ResetTeleportBudget() { teleportUsed.Value=0;teleportResetAt.Value=-1000; }
+
     public bool UseXRTracking { get; private set; }
     public bool TeleportPending => requestPending;
     public uint OriginRevision => state.Value.Revision;
@@ -99,7 +116,7 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
         {
             var p=DefaultTracking();
             state.Value=new AuthorityPose{Origin=transform.position,Landing=transform.position,Revision=1,Tracking=p};
-            tokenAt=NetworkManager.ServerTime.Time;
+            tokenAt=NetworkManager.ServerTime.Time;turnTokenAt=tokenAt;ResetTeleportBudget();
         }
         if(IsOwner)
         {
@@ -120,13 +137,13 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
         LeftRotation=Quaternion.identity,RightRotation=Quaternion.identity,ControllerRotation=Quaternion.identity};
     void StateChanged(AuthorityPose previous,AuthorityPose current)
     {
-        if(IsOwner)AcceptOrigin(current.Origin,current.Yaw,current.Revision);
+        if(IsOwner && current.Revision>localRevision)AcceptOrigin(current.Origin,current.Yaw,current.Revision);
     }
     void AcceptOrigin(Vector3 origin,float yaw,uint revision)
     {
         if(!IsOwner || revision==0 || revision<localRevision)return;
         if(revision>localRevision)requestPending=false;
-        localRevision=revision;localOrigin=origin;localYaw=yaw;
+        localRevision=revision;localOrigin=origin;localYaw=yaw;queuedTurn=0;
         if(LocalPlayerRig.Instance)LocalPlayerRig.Instance.ApplyApprovedOrigin(localOrigin,localYaw);
     }
     void Update()
@@ -136,7 +153,7 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
         // local transforms. Forged world transforms are never serialized.
         if(IsOwner && localRevision!=0 && LocalPlayerRig.Instance)
             LocalPlayerRig.Instance.ApplyApprovedOrigin(localOrigin,localYaw);
-        if(IsOwner)UpdateSnapTurnInput();
+        if(IsOwner)UpdateContinuousTurnInput();
         if(!IsOwner && !IsServer)
             ApplyState(firstRemoteFrame || displayedRevision!=state.Value.Revision ? 1 : 1-Mathf.Exp(-13*Time.deltaTime));
         else if(IsOwner && !IsServer)
@@ -266,66 +283,75 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
         float norm=q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w;
         return Mathf.Abs(norm-1)<.01f;
     }
-    void UpdateSnapTurnInput()
+    public static float AnalogTurn(float x,float deadzone)
+        => Mathf.Sign(x)*Mathf.Clamp01((Mathf.Abs(x)-deadzone)/(1-deadzone));
+    void UpdateContinuousTurnInput()
     {
-        if(!Application.isFocused || LaserTag.Menu.MainMenuController.GameplayInputBlocked ||
-            !combat || combat.LifeState.Value==PlayerLifeState.Respawning || requestPending || !localBinding)
-        { turnNeedsNeutral=true;return; }
+        bool available=Application.isFocused && !LaserTag.Menu.MainMenuController.GameplayInputBlocked &&
+            combat && combat.IsAlive && !requestPending && localBinding && localRevision!=0;
         var device=UnityEngine.InputSystem.XR.XRController.rightHand;
         var stick=device?.TryGetChildControl<UnityEngine.InputSystem.Controls.Vector2Control>("thumbstick")
             ?? device?.TryGetChildControl<UnityEngine.InputSystem.Controls.Vector2Control>("primary2DAxis");
-        if(stick==null){turnNeedsNeutral=true;return;}
-        Vector2 value=stick.ReadValue();
-        if(value.magnitude<=.25f){turnNeedsNeutral=false;return;}
-        if(turnNeedsNeutral || Mathf.Abs(value.x)<.7f || Mathf.Abs(value.x)<Mathf.Abs(value.y))return;
-        turnNeedsNeutral=true;
-        var settings=LaserTag.Menu.MenuSessionController.Instance?.GetComponent<LaserTag.Menu.SettingsController>();
-        float angle=settings && settings.Current!=null?settings.Current.SnapAngle:45f;
-        RequestSnapTurn(Mathf.Sign(value.x)*Mathf.Clamp(angle,15,90));
+        var tracked=device?.TryGetChildControl<UnityEngine.InputSystem.Controls.ButtonControl>("isTracked");
+        float x=available && tracked!=null && tracked.isPressed && stick!=null ? stick.ReadUnprocessedValue().x : 0;
+        if(!available) { turnNeedsNeutral=true;return; }
+        if(Mathf.Abs(x)<=turnDeadzone)turnNeedsNeutral=false;
+        if(turnNeedsNeutral)return;
+        float axis=AnalogTurn(x,turnDeadzone);
+        float angle=axis*LaserTag.Menu.SettingsController.TurnDegreesPerSecond*Mathf.Min(Time.unscaledDeltaTime,.05f);
+        if(angle!=0)
+        {
+            Vector3 eye=localBinding.xrOrigin.InverseTransformPoint(localBinding.trackedCamera.transform.position);
+            CalculateTurnAroundHead(localOrigin,localYaw,eye,angle,out localOrigin,out localYaw);
+            LocalPlayerRig.Instance.ApplyApprovedOrigin(localOrigin,localYaw);
+            queuedTurn+=angle;
+        }
+        if(Time.unscaledTime>=nextTurnSend && Mathf.Abs(queuedTurn)>.00001f)
+        {
+            float delta=queuedTurn;queuedTurn=0;nextTurnSend=Time.unscaledTime+1f/30;
+            localBinding.ApplyPose();
+            TurnRpc(++turnSequence,localRevision,delta,++poseSequence,Capture(localBinding));
+        }
     }
-    public static void CalculateSnapTurn(Vector3 origin,float yaw,Vector3 eye,float angle,out Vector3 nextOrigin,out float nextYaw)
+    // Rotate the origin around the horizontal tracked eye, preserving room-scale offsets.
+    public static void CalculateTurnAroundHead(Vector3 origin,float yaw,Vector3 eye,float angle,out Vector3 nextOrigin,out float nextYaw)
     {
         Vector3 pivot=origin+Quaternion.Euler(0,yaw,0)*Horizontal(eye);
         nextOrigin=pivot+Quaternion.Euler(0,angle,0)*(origin-pivot);
         nextYaw=Mathf.Repeat(yaw+angle,360);
     }
-    public bool RequestSnapTurn(float angle)
-    {
-        if(!IsOwner || !IsSpawned || requestPending || localRevision==0 || !localBinding ||
-            !combat || combat.LifeState.Value==PlayerLifeState.Respawning || LaserTag.Menu.MainMenuController.GameplayInputBlocked ||
-            !Finite(angle) || Mathf.Abs(angle)<15 || Mathf.Abs(angle)>90)return false;
-        localBinding.ApplyPose();
-        requestPending=true;pendingRequest=++requestSequence;
-        var game=LaserTagGameManager.Instance;
-        RequestSnapTurnRpc(pendingRequest,localRevision,game?game.RoundNumber.Value:-1,angle,++poseSequence,Capture(localBinding));
-        return true;
-    }
     [Rpc(SendTo.Server,InvokePermission=RpcInvokePermission.Owner)]
-    void RequestSnapTurnRpc(uint request,uint revision,int round,float angle,uint trackingSequence,TrackingPose tracking)
+    void TurnRpc(uint sequence,uint revision,float angle,uint trackingSequence,TrackingPose tracking)
     {
-        if(request<=serverRequestSequence)return;
-        serverRequestSequence=request;
-        double now=NetworkManager.ServerTime.Time;
-        if(now<nextRequestAt){RejectTeleport(request,ServerFeet,"Turn/rate limit");return;}
-        nextRequestAt=now+Mathf.Max(.1f,teleportRequestInterval);
-        var game=LaserTagGameManager.Instance;
-        if(revision!=state.Value.Revision || !game || round!=game.RoundNumber.Value ||
-            !combat || combat.LifeState.Value==PlayerLifeState.Respawning ||
-            !Finite(angle) || Mathf.Abs(angle)<15 || Mathf.Abs(angle)>90)
-        {RejectTeleport(request,ServerFeet,"Turn/unavailable or invalid request");return;}
-        Physics.SyncTransforms();
-        if(!TryAcceptTracking(trackingSequence,tracking,out var reason))
-        {RejectTeleport(request,ServerFeet,reason);return;}
-        var s=state.Value;Vector3 feet=ServerFeet;
-        CalculateSnapTurn(s.Origin,s.Yaw,s.Tracking.Eye,angle,out var origin,out var yaw);
-        SetServerOrigin(origin,yaw,feet);
-        TeleportResultRpc(request,true,"");
+        if(sequence<=serverTurnSequence)return;
+        serverTurnSequence=sequence;
+        double now=ServerNow;
+        float elapsed=(float)System.Math.Max(0,now-turnTokenAt);turnTokenAt=now;
+        turnTokens=Mathf.Min(45,turnTokens+elapsed*180);
+        turnPacketTokens=Mathf.Min(8,turnPacketTokens+elapsed*45);
+        if(turnPacketTokens<1)return;
+        turnPacketTokens--;
+        if(revision!=state.Value.Revision || !combat || !combat.IsAlive || !Finite(angle) || Mathf.Abs(angle)<.000001f || Mathf.Abs(angle)>12 || Mathf.Abs(angle)>turnTokens ||
+            (trackingSequence>serverPoseSequence && !TryAcceptTracking(trackingSequence,tracking,out _)))
+        {
+            var current=state.Value;TrackingCorrectionOwnerRpc(current.Origin,current.Yaw,current.Revision,"Turn rejected");return;
+        }
+        turnTokens-=Mathf.Abs(angle);
+        var s=state.Value;
+        CalculateTurnAroundHead(s.Origin,s.Yaw,s.Tracking.Eye,angle,out s.Origin,out s.Yaw);
+        state.Value=s;ApplyState(1);
     }
     public bool RequestTeleport(Vector3 feet)
     {
         string unavailable=!IsOwner?"Client/not owner":!IsSpawned?"Client/not spawned":
-            requestPending?"Client/request pending":localRevision==0?"Client/origin not initialized":!localBinding?"Client/tracking binding unavailable":null;
+            TeleportCharges<=0?"Client/teleport recharging":requestPending?"Client/request pending":localRevision==0?"Client/origin not initialized":!localBinding?"Client/tracking binding unavailable":null;
         if(unavailable!=null){LogTeleportRejection(0,feet,unavailable,"submit");return false;}
+        // Flush predicted turn remainder before the reliable teleport request.
+        if(Mathf.Abs(queuedTurn)>.00001f)
+        {
+            float delta=queuedTurn;queuedTurn=0;localBinding.ApplyPose();
+            TurnRpc(++turnSequence,localRevision,delta,++poseSequence,Capture(localBinding));
+        }
         localBinding.ApplyPose(); // sample the release frame, including current controller aim
         requestPending=true;pendingRequest=++requestSequence;
         var game=LaserTagGameManager.Instance;
@@ -351,6 +377,7 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
         if(game.Phase.Value==GamePhase.Playing && !combat.InRound.Value)
         {RejectTeleport(request,feet,"Request/not participating in current round");return;}
         if(!Finite(feet)){RejectTeleport(request,feet,"Request/non-finite destination");return;}
+        if(TeleportCharges<=0){RejectTeleport(request,feet,"Teleport recharging");return;}
         Physics.SyncTransforms();
         if(!TryAcceptTracking(trackingSequence,tracking,out var reason))
         {RejectTeleport(request,feet,reason);return;}
@@ -358,6 +385,9 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
         {RejectTeleport(request,feet,reason);return;}
         // Unity executes requests sequentially. Publish authoritative feet before processing
         // another player's request, without waiting for an owner acknowledgement.
+        if(now>=teleportResetAt.Value)teleportUsed.Value=0;
+        teleportUsed.Value++;
+        teleportResetAt.Value=now+Mathf.Max(.1f,teleportUsed.Value>=TeleportCapacity?teleportCooldown:teleportIdleReset);
         var s=state.Value;
         SetServerOrigin(s.Origin+(approved-ServerFeet),s.Yaw,approved);
         TeleportResultRpc(request,true,"");
@@ -380,6 +410,7 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
     public void ServerPlace(Vector3 feet,float facingYaw)
     {
         if(!IsServer || !IsSpawned || !Finite(feet) || !Finite(facingYaw))return;
+        ResetTeleportBudget();
         var s=state.Value;
         float yaw=facingYaw-TrackingYaw(s.Tracking.EyeRotation);
         SetServerOrigin(feet-Quaternion.Euler(0,yaw,0)*Horizontal(s.Tracking.Eye),yaw,feet);
@@ -393,7 +424,7 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
         ApplyState(1);
     }
     [Rpc(SendTo.Owner,InvokePermission=RpcInvokePermission.Server)]
-    void ApprovedOriginOwnerRpc(Vector3 origin,float yaw,uint revision){AcceptOrigin(origin,yaw,revision);}
+    void ApprovedOriginOwnerRpc(Vector3 origin,float yaw,uint revision){if(revision>localRevision)AcceptOrigin(origin,yaw,revision);}
     [Rpc(SendTo.Owner,InvokePermission=RpcInvokePermission.Server)]
     void TeleportResultRpc(uint request,bool accepted,string reason)
     {

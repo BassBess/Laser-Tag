@@ -47,6 +47,13 @@ public class LaserRay : MonoBehaviour
     [Tooltip("Small local aiming dot instead of a continuous beam.")]
     public bool showAimDot = true;
     [Min(.005f)] public float aimDotSize = .035f;
+    [Range(.1f,1f)] public float aimAngularSize = .4f;
+    [Min(.005f)] public float aimMinimumScale = .006f;
+    [Min(.01f)] public float aimMaximumScale = .4f;
+    public bool aimReticleRing = true;
+    [Range(.02f,.3f)] public float aimOutlineWidth = .12f;
+    public Color aimOutlineColor = new Color(.01f,.02f,.025f,1);
+    Texture2D reticleTexture;
     public Color aimDotColor = new Color(.35f, .85f, 1f, 1f);
     [Range(0,1)] public float aimDotBrightness = .65f;
     [Tooltip("Width of the bright center line, in meters.")]
@@ -110,6 +117,7 @@ public class LaserRay : MonoBehaviour
             owner = transform.root;
 
         CreateTextures();
+        CreateReticleTexture();
 
         // Outer glow: the LineRenderer already on this object
         glowLine = GetComponent<LineRenderer>();
@@ -143,6 +151,11 @@ public class LaserRay : MonoBehaviour
     {
         if (muzzleGlow) Destroy(muzzleGlow.gameObject);
         if (hitGlow) Destroy(hitGlow.gameObject);
+        if (reticleTexture) Destroy(reticleTexture);
+        if (muzzleGlowMat) Destroy(muzzleGlowMat);
+        if (hitGlowMat) Destroy(hitGlowMat);
+        if (glowLine && glowLine.sharedMaterial) Destroy(glowLine.sharedMaterial);
+        if (coreLine && coreLine.sharedMaterial) Destroy(coreLine.sharedMaterial);
     }
 
     void Update()
@@ -268,17 +281,43 @@ public class LaserRay : MonoBehaviour
         var me = RelayCombatPlayer.Local;
         bool localAim = showAimDot && me && me.IsAlive && LocalPlayerRig.Instance &&
             System.Array.IndexOf(LocalPlayerRig.Instance.guns, this) >= 0 &&
+            LocalPlayerRig.Instance.rightController && transform.IsChildOf(LocalPlayerRig.Instance.rightController) &&
             !LaserTag.Menu.MainMenuController.GameplayInputBlocked;
         bool showHit = hasHit && ((showHitGlow && visible) || localAim);
         hitGlow.gameObject.SetActive(showHit);
         if (showHit)
         {
             Vector3 spot = currentHit.point + currentHit.normal * 0.01f;
-            PlaceGlow(hitGlow, hitGlowMat, spot, shot > .001f ? hitGlowSize * (0.5f + 0.5f * brightness) : aimDotSize, shot > .001f ? brightness : aimDotBrightness);
-            if (shot <= .001f) hitGlowMat.color = WithAlpha(aimDotColor, aimDotBrightness);
+            PlaceGlow(hitGlow, hitGlowMat, spot, shot > .001f ? hitGlowSize * (0.5f + 0.5f * brightness) : AimSize(), shot > .001f ? brightness : aimDotBrightness);
+            hitGlowMat.mainTexture=shot>.001f?spotTexture:reticleTexture;
+            if (shot <= .001f)
+            {
+                hitGlowMat.color=WithAlpha(Color.white,aimDotBrightness);
+                // Lie on the hit surface; ordinary depth testing keeps cover occluding it.
+                hitGlow.rotation=Quaternion.LookRotation(currentHit.normal);
+            }
         }
     }
 
+    float AimSize()
+    {
+        float distance=viewCamera?Vector3.Distance(viewCamera.transform.position,currentHit.point):currentHit.distance;
+        float diameter=2*distance*Mathf.Tan(aimAngularSize*Mathf.Deg2Rad*.5f)*(aimDotSize/.035f);
+        return Mathf.Clamp(diameter*LaserTag.Menu.SettingsController.CrosshairSizeMultiplier,aimMinimumScale,Mathf.Max(aimMinimumScale,aimMaximumScale));
+    }
+    void CreateReticleTexture()
+    {
+        const int size=128;
+        reticleTexture=new Texture2D(size,size,TextureFormat.RGBA32,false){wrapMode=TextureWrapMode.Clamp};
+        for(int y=0;y<size;y++)for(int x=0;x<size;x++)
+        {
+            float r=new Vector2((x+.5f)/size*2-1,(y+.5f)/size*2-1).magnitude;
+            bool center=r<.26f, ring=aimReticleRing && r>.65f && r<.84f;
+            bool outline=r<.26f+aimOutlineWidth || (aimReticleRing && r>.65f-aimOutlineWidth && r<.84f+aimOutlineWidth);
+            reticleTexture.SetPixel(x,y,center||ring?aimDotColor:outline?aimOutlineColor:Color.clear);
+        }
+        reticleTexture.Apply(false,true);
+    }
     // ---------- helpers ----------
 
     static Color WithAlpha(Color c, float alphaMultiplier)

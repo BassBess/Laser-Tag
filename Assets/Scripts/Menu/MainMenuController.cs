@@ -149,7 +149,7 @@ namespace LaserTag.Menu
             Note("One player chooses PLAY > HOST GAME and shares the six-character room code. Other players choose JOIN GAME and enter it, using the room-code keypad if needed. Choose five slots for the five-player session. Everyone, including the host, must toggle READY. Only the host starts the match; at least two players are needed for a round. Wait for loading and the three-second countdown before shooting.");
             Title("2 / TELEPORT, LOOK AND AIM");
             Note("Use the LEFT hand for teleporting. Push the left thumbstick forward to display the arc, aim at a clear floor area, then release the stick to request the teleport. Cyan marks a valid preview; red means it is blocked. A cyan preview is not approval: the server can reject the request if the destination becomes occupied before landing. Walls, cover, prop tops, unsupported edges, steep slopes, excessive height changes and other players block landings. Teleporting is unavailable while dead or while options are open.");
-            Note("Look naturally with your headset. Flick the RIGHT thumbstick left/right to snap turn; release to centre before the next turn. Adjust the snap angle in Settings. Aim with your RIGHT controller. Stay inside your own cleared physical play area with Quest boundaries enabled. Use teleporting to travel through the virtual arena. Do not physically walk through virtual cover or rely on boundary warnings to clear your room.");
+            Note("Look naturally with your headset. Push the RIGHT thumbstick left/right to turn smoothly. Adjust Turn Sensitivity in Settings. Aim with your RIGHT controller. Stay inside your own cleared physical play area with Quest boundaries enabled. Use teleporting to travel through the virtual arena. Do not physically walk through virtual cover or rely on boundary warnings to clear your room.");
             Note("Every player has a different LED color on their suit. A small matching name tag above each opponent identifies them; walls and cover can hide it. Your own name tag is hidden from your view.");
             Title("3 / SHOOTING AND COVER");
             Note("Aim the right-hand gun and pull the RIGHT TRIGGER for one shot. Release and pull again; the default cooldown is 0.25 seconds. The left hand is reserved for teleporting. Shots reach up to 50 metres. Solid cover stops lasers. You cannot hit yourself. Both head and body hits deal 10 damage; head hits have no extra damage bonus. A confirmed hit marker and sound mean damage was accepted. A beam alone does not guarantee a hit.");
@@ -175,16 +175,22 @@ namespace LaserTag.Menu
         void BuildSettings()
         {
             var settings = GetComponent<SettingsController>(); var draft = settings.Copy(); Title("SETTINGS");
+            Note("VR CONTROLS");
+            Slider turn = Range("Turn sensitivity (degrees / second)",draft.TurnSpeed,30,180);
+            Slider crosshair = Range("Crosshair size",draft.CrosshairScale,.5f,2);
+            turn.onValueChanged.AddListener(v=>{draft.TurnSpeed=v;settings.PreviewControls(draft.TurnSpeed,draft.CrosshairScale);});
+            crosshair.onValueChanged.AddListener(v=>{draft.CrosshairScale=v;settings.PreviewControls(draft.TurnSpeed,draft.CrosshairScale);});
+            Note("Preview changes now. APPLY saves settings for the next session.");
+            Note("AUDIO");
             Slider master = Range("Master volume",draft.Master,0,1), fx = Range("Sound effects",draft.Effects,0,1), music = Range("Music / ambience",draft.Music,0,1);
             Toggle mute = Check("Mute all audio",draft.Mute);
-            Slider snap = settings.SupportsSnapTurn ? Range("Snap turn angle",draft.SnapAngle,15,90) : null;
             Dropdown quality = Choice("Graphics quality",QualitySettings.names,draft.Quality);
             Slider sensitivity = SettingsController.SimulatorSettingsSupported ? Range("Simulator look sensitivity (mouse + keyboard)",draft.Sensitivity,.05f,.5f) : null;
             if(sensitivity)Note("Sensitivity applies only to the XR Interaction Simulator; it never changes headset tracking.");
             Dropdown mode = null, resolution = null;
             if (SettingsController.DesktopDisplaySupported)
             { mode = Choice("Display mode",new[]{"Windowed","Fullscreen"},draft.Fullscreen?1:0); resolution = Choice("Resolution",settings.ResolutionNames,settings.ResolutionIndex(draft.Width,draft.Height)); }
-            Action("APPLY",()=>{ draft.Master=master.value;draft.Effects=fx.value;draft.Music=music.value;draft.Mute=mute.isOn;draft.Quality=quality.value;if(sensitivity)draft.Sensitivity=sensitivity.value;if(snap)draft.SnapAngle=snap.value;if(mode){draft.Fullscreen=mode.value==1;var size=settings.ResolutionSizes[resolution.value];draft.Width=size.x;draft.Height=size.y;}settings.Apply(draft);Notify("Settings saved."); });
+            Action("APPLY",()=>{ draft.Master=master.value;draft.Effects=fx.value;draft.Music=music.value;draft.Mute=mute.isOn;draft.Quality=quality.value;if(sensitivity)draft.Sensitivity=sensitivity.value;draft.TurnSpeed=turn.value;draft.CrosshairScale=crosshair.value;if(mode){draft.Fullscreen=mode.value==1;var size=settings.ResolutionSizes[resolution.value];draft.Width=size.x;draft.Height=size.y;}settings.Apply(draft);Notify("Settings saved."); });
             Action("RESET TO DEFAULTS",()=>{settings.Apply(settings.Defaults());Show(settingsReturnPage=="Pause"?"GameSettings":"Settings");Notify("Default settings restored.");}); Action("BACK",()=>Show(settingsReturnPage));
         }
         void Notify(string message){uiNotice=message;noticeUntil=Time.unscaledTime+3;}
@@ -202,7 +208,7 @@ namespace LaserTag.Menu
         Button Action(string value,Action action)
         {
             var image=Image(value,content,new Color(.06f,.17f,.24f));var e=image.gameObject.AddComponent<LayoutElement>();e.minHeight=52;
-            var button=image.gameObject.AddComponent<Button>();button.targetGraphic=image;var colors=button.colors;colors.normalColor=Color.white;colors.highlightedColor=new Color(.3f,.93f,1);colors.selectedColor=new Color(.4f,.82f,1);colors.pressedColor=new Color(.12f,.65f,.8f);button.colors=colors;
+            var button=image.gameObject.AddComponent<Button>();button.targetGraphic=image;var colors=button.colors;colors.normalColor=new Color(.65f,.65f,.65f);colors.highlightedColor=Color.white;colors.selectedColor=new Color(.8f,1,1);colors.pressedColor=new Color(.3f,.8f,1);colors.colorMultiplier=2;colors.fadeDuration=.08f;button.colors=colors;
             var text=Label(image.transform,value,20,Color.white);Stretch(text.rectTransform);text.alignment=TextAnchor.MiddleCenter;
             button.onClick.AddListener(()=>{GetComponent<MenuAudio>().Click();action();});return button;
         }
@@ -228,10 +234,10 @@ namespace LaserTag.Menu
         }
         Slider Range(string title,float value,float min,float max)
         {
-            var label=Note(title+"  "+value.ToString("0.00"));var image=Image(title,content,new Color(.07f,.17f,.23f));image.gameObject.AddComponent<LayoutElement>().minHeight=30;
+            var label=Note(title+"  "+value.ToString("0.00"));var image=Image(title,content,new Color(.07f,.17f,.23f));image.gameObject.AddComponent<LayoutElement>().minHeight=44;
             var slider=image.gameObject.AddComponent<Slider>();slider.minValue=min;slider.maxValue=max;
             var fill=Image("Fill",image.transform,cyan);Stretch(fill.rectTransform);slider.fillRect=fill.rectTransform;
-            var handle=Image("Handle",image.transform,Color.white);handle.rectTransform.anchorMin=handle.rectTransform.anchorMax=new Vector2(.5f,.5f);handle.rectTransform.sizeDelta=new Vector2(16,30);slider.handleRect=handle.rectTransform;slider.targetGraphic=handle;slider.value=value;slider.onValueChanged.AddListener(v=>label.text=title+"  "+v.ToString("0.00"));return slider;
+            var handle=Image("Handle",image.transform,Color.white);handle.rectTransform.anchorMin=handle.rectTransform.anchorMax=new Vector2(.5f,.5f);handle.rectTransform.sizeDelta=new Vector2(26,44);slider.handleRect=handle.rectTransform;slider.targetGraphic=handle;slider.value=value;slider.onValueChanged.AddListener(v=>label.text=title+"  "+v.ToString("0.00"));return slider;
         }
         Toggle Check(string title,bool value)
         {var image=Image(title,content,new Color(.06f,.17f,.23f));image.gameObject.AddComponent<LayoutElement>().minHeight=44;var toggle=image.gameObject.AddComponent<Toggle>();toggle.targetGraphic=image;var tick=Image("Selected",image.transform,cyan);Place(tick.rectTransform,.02f,.25f,.06f,.75f);toggle.graphic=tick;var label=Label(image.transform,title+(value?"  [ON]":"  [OFF]"),20,Color.white);Place(label.rectTransform,.09f,0,1,1);toggle.isOn=value;toggle.onValueChanged.AddListener(on=>label.text=title+(on?"  [ON]":"  [OFF]"));return toggle;}

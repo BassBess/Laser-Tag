@@ -31,6 +31,9 @@ namespace LaserTag.Menu
         readonly List<InputAction> menuActions = new List<InputAction>(), gameActions = new List<InputAction>();
         readonly Dictionary<XRRayInteractor,GameObject> pointerDots = new Dictionary<XRRayInteractor,GameObject>();
         readonly List<XRRayInteractor> expiredPointers = new List<XRRayInteractor>();
+        readonly Gradient normalPointer=PointerGradient(new Color(.2f,.45f,.65f,.55f));
+        readonly Gradient hoverPointer=PointerGradient(new Color(.2f,1f,.8f));
+        readonly Gradient pressedPointer=PointerGradient(Color.white);
         readonly MaterialPropertyBlock pointerColor = new MaterialPropertyBlock();
         readonly List<XRDisplaySubsystem> displays = new List<XRDisplaySubsystem>();
         InputAction options;
@@ -74,7 +77,6 @@ namespace LaserTag.Menu
                 gameMaterials.Clear();
                 if(gameRig)
                 {
-                    AddGameRay(gameRig.leftController,"LeftHand");
                     AddGameRay(gameRig.rightController,"RightHand");
                 }
             }
@@ -120,7 +122,7 @@ namespace LaserTag.Menu
             menuOrigin=root.AddComponent<XROrigin>();menuOrigin.Camera=menuCamera;menuOrigin.CameraFloorOffsetObject=offset;
             menuOrigin.RequestedTrackingOriginMode=XROrigin.TrackingOriginMode.Floor;menuOrigin.CameraYOffset=1.65f;
             Pose(menuCamera.gameObject,"<XRHMD>","centerEyePosition","centerEyeRotation");
-            foreach(string hand in new[]{"LeftHand","RightHand"})
+            foreach(string hand in new[]{"RightHand"})
             {
                 var go=new GameObject(hand+" Menu Pointer");go.transform.SetParent(offset.transform,false);
                 Pose(go,"<XRController>{"+hand+"}","pointerPosition","pointerRotation");
@@ -155,16 +157,16 @@ namespace LaserTag.Menu
             ray.uiPressInput.inputActionValue=Action("UI pressure",InputActionType.Value,"<XRController>{"+hand+"}/trigger",game);
             ray.uiScrollInput.inputSourceMode=XRInputValueReader.InputSourceMode.InputAction;
             ray.uiScrollInput.inputAction=Action("UI scroll",InputActionType.Value,"<XRController>{"+hand+"}/primary2DAxis",game);
-            var line=go.AddComponent<LineRenderer>();line.widthMultiplier=.003f;line.positionCount=2;
+            var line=go.AddComponent<LineRenderer>();line.widthMultiplier=.0045f;line.positionCount=2;
             line.shadowCastingMode=UnityEngine.Rendering.ShadowCastingMode.Off;line.receiveShadows=false;
-            var material=new Material(Shader.Find("Sprites/Default"));material.color=Color.cyan;(game?gameMaterials:materials).Add(material);line.sharedMaterial=material;
+            var material=new Material(Shader.Find("Sprites/Default"));material.color=Color.white;(game?gameMaterials:materials).Add(material);line.sharedMaterial=material;
             var visual=go.AddComponent<UnityEngine.XR.Interaction.Toolkit.Interactors.Visuals.XRInteractorLineVisual>();
             visual.overrideInteractorLineOrigin=false;visual.lineOriginTransform=go.transform;
             visual.overrideInteractorLineLength=false;visual.lineBendRatio=1f;
             visual.snapEndpointIfAvailable=false;visual.smoothMovement=false;
-            visual.lineWidth=.004f;visual.setLineColorGradient=true;
+            visual.lineWidth=.0045f;visual.setLineColorGradient=true;
             visual.validColorGradient=PointerGradient(Color.cyan);
-            visual.invalidColorGradient=PointerGradient(new Color(.15f,.7f,1));
+            visual.invalidColorGradient=PointerGradient(new Color(.2f,.45f,.65f,.55f));
             var dot=GameObject.CreatePrimitive(PrimitiveType.Sphere);dot.name="Menu Aim Cursor";dot.layer=2;
             dot.transform.SetParent(go.transform,false);dot.transform.localScale=Vector3.one*.014f;
             var collider=dot.GetComponent<Collider>();collider.enabled=false;Destroy(collider);
@@ -184,7 +186,12 @@ namespace LaserTag.Menu
                 if(!ray || !dot){expiredPointers.Add(ray);continue;}
                 bool visible=canvas.enabled && ray.isActiveAndEnabled;
                 if(!visible || !ray.TryGetCurrentUIRaycastResult(out var hit)){dot.SetActive(false);continue;}
-                dot.SetActive(true);dot.transform.position=hit.worldPosition-ray.transform.forward*.008f;
+                bool usable=hit.gameObject && hit.gameObject.GetComponentInParent<Selectable>() is Selectable control && control.IsInteractable();
+                bool pressed=UnityEngine.InputSystem.XR.XRController.rightHand?.TryGetChildControl<UnityEngine.InputSystem.Controls.ButtonControl>("triggerPressed")?.isPressed ?? false;
+                var visual=ray.GetComponent<UnityEngine.XR.Interaction.Toolkit.Interactors.Visuals.XRInteractorLineVisual>();
+                visual.validColorGradient=usable?(pressed?pressedPointer:hoverPointer):normalPointer;
+                dot.SetActive(usable);dot.transform.localScale=Vector3.one*(pressed?.020f:.014f);
+                dot.transform.position=hit.worldPosition-ray.transform.forward*.008f;
                 var selectable=hit.gameObject?hit.gameObject.GetComponentInParent<Selectable>():null;
                 pointerColor.SetColor("_Color",selectable && selectable.IsInteractable()?Color.white:Color.cyan);
                 dot.GetComponent<Renderer>().SetPropertyBlock(pointerColor);

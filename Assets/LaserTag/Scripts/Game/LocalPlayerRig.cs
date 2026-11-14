@@ -61,6 +61,11 @@ public class LocalPlayerRig : MonoBehaviour
         if (playerCamera == null && xrOrigin != null) playerCamera = xrOrigin.Camera;
         if (playerCamera == null) playerCamera = Camera.main;
         if (teleportationProvider == null) teleportationProvider = FindAnyObjectByType<TeleportationProvider>();
+        if (xrOrigin)
+        {
+            foreach(var turn in xrOrigin.GetComponentsInChildren<UnityEngine.XR.Interaction.Toolkit.Locomotion.Turning.SnapTurnProvider>(true))turn.enabled=false;
+            foreach(var turn in xrOrigin.GetComponentsInChildren<UnityEngine.XR.Interaction.Toolkit.Locomotion.Turning.ContinuousTurnProvider>(true))turn.enabled=false;
+        }
         if (guns == null || guns.Length == 0) guns = FindObjectsByType<LaserRay>(FindObjectsSortMode.None);
     }
 

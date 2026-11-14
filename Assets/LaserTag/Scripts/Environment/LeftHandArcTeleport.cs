@@ -271,6 +271,7 @@ public sealed class LeftHandArcTeleport : MonoBehaviour
         else if(!player || !player.IsOwner || !player.IsSpawned)reason="Client/owned player unavailable";
         else if(!player.IsAlive)reason="Client/player not alive";
         else if(!game || !networkMovement)reason="Client/match or movement unavailable";
+        else if(networkMovement.TeleportCharges<=0)reason="Client/teleport recharging";
         else if(networkMovement.TeleportPending)reason="Client/request already pending";
         else if(!(game.Phase.Value==GamePhase.Lobby || (game.Phase.Value==GamePhase.Playing && player.InRound.Value)))reason="Client/match phase does not permit teleport";
         return reason==null;

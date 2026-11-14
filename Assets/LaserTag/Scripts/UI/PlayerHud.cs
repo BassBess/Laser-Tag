@@ -46,6 +46,8 @@ public class PlayerHud : MonoBehaviour
     Image healthFillImage;
     TextMeshProUGUI healthText, ammoText, ammoMaxText, ammoLabel, centerText, subText, statusText, killText;
     TextMeshProUGUI livesText, playersText, timerText;
+    TextMeshProUGUI teleportText;
+    int shownTeleport=-1, shownTeleportTenths=-1;
     int shownTimer = -1;
     int shownHealth=-1, shownMaxHealth=-1, shownAmmo=-1, shownMaxAmmo=-1;
     int shownLives=int.MinValue, shownPlayers=-1, shownCapacity=-1;
@@ -155,6 +157,7 @@ public class PlayerHud : MonoBehaviour
         deathTint = MakeImage(root.transform, "Death Tint", Vector2.zero, new Vector2(6000, 4000), new Color(0.35f, 0f, 0f, 0f));
         damageFlash = MakeImage(root.transform, "Damage Flash", Vector2.zero, new Vector2(6000, 4000), new Color(1f, 0f, 0f, 0f));
 
+        teleportText = MakeText(root.transform, "Teleport Charges", new Vector2(-270f,-195f), new Vector2(380,32), "", 23, TextAlignmentOptions.Center, ammoColor);
         timerText = MakeText(root.transform, "Match Timer", new Vector2(220f, 245f), new Vector2(140, 32), "", 26,
             TextAlignmentOptions.Center, Color.white);
         // ---- Health (upper left) ----
@@ -301,6 +304,16 @@ public class PlayerHud : MonoBehaviour
         if (canvas == null) return;
 
         RelayCombatPlayer me = RelayCombatPlayer.Local;
+        var movement=me?me.GetComponent<RelayAvatarPlayer>():null;
+        int charges=movement?movement.TeleportCharges:0;
+        int tenths=movement?Mathf.CeilToInt(movement.TeleportRechargeSeconds*10):0;
+        if(charges!=shownTeleport || tenths!=shownTeleportTenths)
+        {
+            if(movement && charges>0)teleportText.SetText("TELEPORT {0}/{1}",(float)charges,(float)movement.TeleportCapacity);
+            else if(movement)teleportText.SetText("TELEPORT RECHARGING {0:1}s",tenths*.1f);
+            else teleportText.text="";
+            shownTeleport=charges;shownTeleportTenths=tenths;
+        }
         LocalPlayerRig rig = LocalPlayerRig.Instance;
         LaserTagGameManager gm = LaserTagGameManager.Instance;
         bool gameRunning = gm != null && gm.IsSpawned;
