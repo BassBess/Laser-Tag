@@ -42,7 +42,7 @@ public class SpawnManager : MonoBehaviour
     }
 
     /// <summary>Finds a free spot for <paramref name="player"/>. <paramref name="reserved"/> are spots already given out.</summary>
-    public bool TryFindSpawn(RelayCombatPlayer player, IList<Vector3> reserved, out Vector3 feet, out float yaw)
+    public bool TryFindSpawn(RelayCombatPlayer player, IList<Vector3> reserved, out Vector3 feet, out float yaw, bool initialOnly = false)
     {
         feet=default; yaw=0;
         TeleportClearance.LocalPlayerRoots(ignore);
@@ -50,7 +50,8 @@ public class SpawnManager : MonoBehaviour
 
         // Try the predetermined points in random order.
         order.Clear();
-        for (int i = 0; i < spawnPoints.Count; i++) order.Add(i);
+        for (int i = 0; i < spawnPoints.Count; i++)
+            if (!initialOnly || spawnPoints[i].initialSpawn) order.Add(i);
         Shuffle(order);
         foreach (int i in order)
         {
@@ -63,7 +64,7 @@ public class SpawnManager : MonoBehaviour
         }
 
         // Every point is occupied: try random spots on the teleport floors.
-        if (fallbackFloors != null && fallbackFloors.Length > 0)
+        if (!initialOnly && fallbackFloors != null && fallbackFloors.Length > 0)
         {
             for (int attempt = 0; attempt < randomFallbackAttempts; attempt++)
             {

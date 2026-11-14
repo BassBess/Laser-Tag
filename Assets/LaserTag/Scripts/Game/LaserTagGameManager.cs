@@ -256,7 +256,7 @@ public class LaserTagGameManager : NetworkBehaviour
             p.Placement.Value = 0;
             p.RespawnAt.Value = 0;
             p.serverLastHitTime = -999f;
-            if(!PlaceAtFreeSpawn(p)) { p.InRound.Value=false;p.LifeState.Value=PlayerLifeState.Spectating; }
+            if(!PlaceAtFreeSpawn(p, true)) { p.InRound.Value=false;p.LifeState.Value=PlayerLifeState.Spectating; }
         }
         if(scratch.Exists(p=>!p.InRound.Value))
         {
@@ -273,9 +273,9 @@ public class LaserTagGameManager : NetworkBehaviour
         PhaseEndsAt.Value = ServerNow + startCountdown;
     }
 
-    bool PlaceAtFreeSpawn(RelayCombatPlayer p)
+    bool PlaceAtFreeSpawn(RelayCombatPlayer p, bool initialOnly = false)
     {
-        if (spawnManager == null || !spawnManager.TryFindSpawn(p,reserved,out Vector3 feet,out float yaw)) return false;
+        if (spawnManager == null || !spawnManager.TryFindSpawn(p,reserved,out Vector3 feet,out float yaw, initialOnly)) return false;
         reserved.Add(feet);
         p.ServerTeleport(feet, yaw);
         return true;

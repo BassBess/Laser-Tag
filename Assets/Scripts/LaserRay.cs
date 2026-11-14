@@ -9,7 +9,7 @@ using UnityEngine.InputSystem;
 ///   - a thin, bright, almost-white "core" line (created automatically as a child)
 /// plus two soft glow sprites: one at the muzzle and one where the beam hits.
 ///
-/// - A dimmer "aim laser" is always visible so the player can see where they aim.
+/// - A small local aiming dot is available; the continuous aiming beam is off by default.
 /// - When the trigger is pressed, a bright, thick "shot beam" flashes and fades out.
 /// The beam stops at the first collider it hits (walls/cover block it), otherwise at maxDistance.
 ///
@@ -43,7 +43,9 @@ public class LaserRay : MonoBehaviour
     public Color coreColor = new Color(1f, 0.85f, 0.85f, 1f);
 
     [Header("Aim laser (always on)")]
-    public bool showAimLaser = true;
+    public bool showAimLaser = false;
+    [Tooltip("Small local aiming dot instead of a continuous beam.")]
+    public bool showAimDot = true;
     [Tooltip("Width of the bright center line, in meters.")]
     public float aimCoreWidth = 0.004f;
     [Tooltip("Width of the soft red glow around it, in meters.")]
@@ -258,12 +260,12 @@ public class LaserRay : MonoBehaviour
             PlaceGlow(muzzleGlow, muzzleGlowMat, muzzle.position, muzzleGlowSize * (0.6f + 0.4f * shot), shot);
 
         // Glowing spot where the beam hits a surface.
-        bool showHit = showHitGlow && visible && hasHit;
+        bool showHit = showHitGlow && hasHit && (visible || showAimDot);
         hitGlow.gameObject.SetActive(showHit);
         if (showHit)
         {
             Vector3 spot = currentHit.point + currentHit.normal * 0.01f;
-            PlaceGlow(hitGlow, hitGlowMat, spot, hitGlowSize * (0.5f + 0.5f * brightness), brightness);
+            PlaceGlow(hitGlow, hitGlowMat, spot, shot > .001f ? hitGlowSize * (0.5f + 0.5f * brightness) : .025f, shot > .001f ? brightness : .3f);
         }
     }
 

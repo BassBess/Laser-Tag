@@ -6,6 +6,9 @@ using UnityEngine;
 /// </summary>
 public class LaserTagSpawnPoint : MonoBehaviour
 {
+    [Tooltip("Eligible for indoor round starts; other points remain available for respawns.")]
+    public bool initialSpawn;
+
     public float Yaw => transform.eulerAngles.y;
 
     void OnDrawGizmos()

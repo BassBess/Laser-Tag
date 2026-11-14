@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Threading;
@@ -138,11 +138,16 @@ namespace LaserTag.Menu
             {
                 if (e.ClientsThatTimedOut != null && e.ClientsThatTimedOut.Count > 0)
                 { Leave("A player timed out loading the arena. Please recreate the room."); return; }
+                var initialReservations = new System.Collections.Generic.List<Vector3>();
                 foreach (ulong id in Manager.ConnectedClientsIds)
                 {
                     var client = Manager.ConnectedClients[id];
                     if (client.PlayerObject != null) continue;
-                    var player = Instantiate(Manager.NetworkConfig.PlayerPrefab);
+                    var spawns = SpawnManager.Instance;
+                    if (!spawns || !spawns.TryFindSpawn(null, initialReservations, out var feet, out var yaw, true))
+                    { Leave("No clear indoor starting position. Please recreate the room."); return; }
+                    initialReservations.Add(feet);
+                    var player = Instantiate(Manager.NetworkConfig.PlayerPrefab, feet, Quaternion.Euler(0, yaw, 0));
                     player.GetComponent<NetworkObject>().SpawnAsPlayerObject(id, true);
                 }
                 Lobby.Phase.Value = SessionPhase.Playing;
