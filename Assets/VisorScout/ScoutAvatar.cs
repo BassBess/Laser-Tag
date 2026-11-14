@@ -32,6 +32,9 @@ public class ScoutAvatar : MonoBehaviour
     public bool hideArmsInFirstPerson = true;
     [Tooltip("Local camera only: hide the helmet and, optionally, arm segments. Hands, controller guns and torso stay visible. Leave empty on remote avatars.")]
     public Camera localCamera;
+    [Tooltip("Hide armor close to the local eye camera, preserving hands and all outside views.")]
+    [Min(.04f)] public float firstPersonBodyClearance = .12f;
+    readonly HashSet<Renderer> alwaysHiddenRenderers = new HashSet<Renderer>();
     private Renderer[] firstPersonHiddenRenderers;
     private bool[] previousVisibility;
     private bool hiding;
@@ -112,6 +115,11 @@ public class ScoutAvatar : MonoBehaviour
                         !(leftHand && renderer.transform.IsChildOf(leftHand)) &&
                         !(rightHand && renderer.transform.IsChildOf(rightHand))) renderers.Add(renderer);
         }
+        alwaysHiddenRenderers.Clear();
+        foreach(var renderer in renderers)alwaysHiddenRenderers.Add(renderer);
+        foreach(var renderer in GetComponentsInChildren<Renderer>(true))
+            if(!(leftHand && renderer.transform.IsChildOf(leftHand)) &&
+                !(rightHand && renderer.transform.IsChildOf(rightHand)))renderers.Add(renderer);
         firstPersonHiddenRenderers = new Renderer[renderers.Count];
         renderers.CopyTo(firstPersonHiddenRenderers);
         previousVisibility = new bool[firstPersonHiddenRenderers.Length];
@@ -126,7 +134,14 @@ public class ScoutAvatar : MonoBehaviour
     {
         if (firstPersonHiddenRenderers != null)
             for (int i = 0; i < firstPersonHiddenRenderers.Length; i++)
-                if (firstPersonHiddenRenderers[i]) firstPersonHiddenRenderers[i].enabled = !hidden && previousVisibility[i];
+                if (firstPersonHiddenRenderers[i])
+                {
+                    var renderer=firstPersonHiddenRenderers[i];
+                    float clearance=localCamera?Mathf.Max(firstPersonBodyClearance,localCamera.nearClipPlane+.03f):0;
+                    bool nearEye=localCamera && renderer.bounds.SqrDistance(localCamera.transform.position)<clearance*clearance;
+                    bool conceal=hidden && (alwaysHiddenRenderers.Contains(renderer) || nearEye);
+                    renderer.enabled=!conceal && previousVisibility[i];
+                }
         hiding = hidden;
     }
     void RestoreVisibility()

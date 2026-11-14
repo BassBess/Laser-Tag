@@ -25,7 +25,7 @@ namespace LaserTag.Menu
             if(GetComponent<MenuSessionController>()!=MenuSessionController.Instance)return;
             Instance=this;
             settings=GetComponent<SettingsController>();
-            music=gameObject.AddComponent<AudioSource>();music.playOnAwake=false;music.loop=true;music.volume=0;musicClip=Tone(true);music.clip=musicClip;music.spatialBlend=0;music.Play();
+            music=gameObject.AddComponent<AudioSource>();music.playOnAwake=false;music.loop=true;music.volume=0;musicClip=Tone(true);music.clip=musicClip;music.spatialBlend=0;music.ignoreListenerPause=true;music.Play();
             gameplayMusicClip=CreateGameplayMusic();
             click=gameObject.AddComponent<AudioSource>();click.playOnAwake=false;click.volume=.3f;clickClip=Tone(false);click.clip=clickClip;
             TrackEffectsSource(click);SceneManager.sceneLoaded+=Loaded;ScanEffects();
@@ -52,6 +52,7 @@ namespace LaserTag.Menu
                 if(music.volume<=.0001f){music.Stop();music.clip=desired;music.Play();}
             }
             else music.volume=Mathf.MoveTowards(music.volume,target,Time.unscaledDeltaTime*.5f);
+            if(music.clip==desired && !music.isPlaying && !session.Leaving)music.Play();
             if(Time.unscaledTime<nextScan)return;nextScan=Time.unscaledTime+.1f;
             expired.Clear();foreach(var pair in gains)if(!pair.Key)expired.Add(pair.Key);
             foreach(var source in expired)gains.Remove(source);
