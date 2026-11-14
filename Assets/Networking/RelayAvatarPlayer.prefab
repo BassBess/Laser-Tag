@@ -859,6 +859,9 @@ MonoBehaviour:
   maximumHeadSpeed: 3
   trackingSlack: 0.15
   teleportRequestInterval: 0.25
+  teleportBurstLimit: 15
+  teleportIdleReset: 2.5
+  teleportCooldown: 2.5
 --- !u!114 &168832847814498041
 MonoBehaviour:
   m_ObjectHideFlags: 0

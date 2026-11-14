@@ -68,8 +68,8 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
     float nextTeleportDiagnostic;
     float poseTokens = 3;
     [Header("Teleport burst (server authority)")]
-    [Min(1)] public int teleportBurstLimit = 7;
-    [Min(.1f)] public float teleportIdleReset = 4f, teleportCooldown = 4f;
+    [Min(1)] public int teleportBurstLimit = 15;
+    [Min(.1f)] public float teleportIdleReset = 2.5f, teleportCooldown = 2.5f;
     [Range(.15f,.2f)] public float turnDeadzone = .18f;
     readonly NetworkVariable<int> teleportUsed = new NetworkVariable<int>();
     readonly NetworkVariable<double> teleportResetAt = new NetworkVariable<double>(-1000);
