@@ -45,7 +45,8 @@ public class PlayerHud : MonoBehaviour
     RectTransform healthFill;
     Image healthFillImage;
     TextMeshProUGUI healthText, ammoText, ammoMaxText, ammoLabel, centerText, subText, statusText, killText;
-    TextMeshProUGUI livesText, playersText;
+    TextMeshProUGUI livesText, playersText, timerText;
+    int shownTimer = -1;
     int shownHealth=-1, shownMaxHealth=-1, shownAmmo=-1, shownMaxAmmo=-1;
     int shownLives=int.MinValue, shownPlayers=-1, shownCapacity=-1;
     RectTransform ammoFill;
@@ -154,6 +155,8 @@ public class PlayerHud : MonoBehaviour
         deathTint = MakeImage(root.transform, "Death Tint", Vector2.zero, new Vector2(6000, 4000), new Color(0.35f, 0f, 0f, 0f));
         damageFlash = MakeImage(root.transform, "Damage Flash", Vector2.zero, new Vector2(6000, 4000), new Color(1f, 0f, 0f, 0f));
 
+        timerText = MakeText(root.transform, "Match Timer", new Vector2(220f, 245f), new Vector2(140, 32), "", 26,
+            TextAlignmentOptions.Center, Color.white);
         // ---- Health (upper left) ----
         var healthPos = new Vector2(-355f, 205f);
         MakeText(root.transform, "Health Label", healthPos + new Vector2(-60f, 37f), new Vector2(120, 30), "HEALTH", 22,
@@ -301,6 +304,13 @@ public class PlayerHud : MonoBehaviour
         LocalPlayerRig rig = LocalPlayerRig.Instance;
         LaserTagGameManager gm = LaserTagGameManager.Instance;
         bool gameRunning = gm != null && gm.IsSpawned;
+        int seconds = gameRunning && gm.Phase.Value == GamePhase.Playing ? Mathf.CeilToInt(gm.SecondsUntil(gm.MatchEndsAt.Value)) : -1;
+        if (seconds != shownTimer)
+        {
+            timerText.text = seconds < 0 ? "" : $"{seconds / 60:00}:{seconds % 60:00}";
+            timerText.color = seconds <= 30 ? new Color(1f,.65f,.3f) : Color.white;
+            shownTimer = seconds;
+        }
 
         // ---- health ----
         int maxHealth = me != null ? Mathf.Max(1, me.maxHealth) : 100;
@@ -468,6 +478,6 @@ public class PlayerHud : MonoBehaviour
             foreach (TextMeshProUGUI cell in cells) cell.color = c;
             rowBackgrounds[i].color = mine ? new Color(highlightColor.r, highlightColor.g, highlightColor.b, 0.18f) : new Color(1, 1, 1, used && i % 2 == 0 ? 0.04f : 0f);
         }
-        SetText(scoreFooter, "Press A to play again");
+        SetText(scoreFooter, (gm.TimeLimitExpired.Value ? "TIME LIMIT  /  " : "") + "Press A to play again");
     }
 }

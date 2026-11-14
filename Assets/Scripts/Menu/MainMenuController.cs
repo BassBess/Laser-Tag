@@ -32,7 +32,8 @@ namespace LaserTag.Menu
         Text status, lobbyRows, roomCode, count;
         Button start, ready;
         InputField joinCode;
-        Dropdown capacity;
+        Dropdown capacity, matchDuration;
+        static readonly int[] Durations = { 180, 300, 600, 900 };
         string panel = "Home";
         float fade;
         string uiNotice;
@@ -96,6 +97,8 @@ namespace LaserTag.Menu
                 var rows = new System.Text.StringBuilder();
                 foreach(var row in state.Members) rows.AppendLine(row.Name + (row.Id == session.Manager.LocalClientId ? "  (you)" : "") + "    /    " + (row.Ready ? "READY" : "not ready"));
                 lobbyRows.text = rows.ToString();
+                matchDuration.SetValueWithoutNotify(Mathf.Max(0, System.Array.IndexOf(Durations, state.MatchDurationSeconds.Value)));
+                matchDuration.interactable = session.Manager.IsHost && !session.Leaving;
                 ready.interactable = !session.Leaving; start.interactable = session.CanStart;
                 start.gameObject.SetActive(session.Manager.IsHost);
             }
@@ -123,6 +126,8 @@ namespace LaserTag.Menu
                 Title("CREW LOBBY"); roomCode = Note(""); count = Note("");
                 Action("COPY ROOM CODE",()=>{ GUIUtility.systemCopyBuffer = session.Lobby.Code.Value.ToString(); Notify("Room code copied."); });
                 lobbyRows = Note(""); lobbyRows.GetComponent<LayoutElement>().minHeight = 110;
+                matchDuration = Choice("Match duration (host)", new[] { "3 minutes", "5 minutes", "10 minutes", "15 minutes" }, 1);
+                matchDuration.onValueChanged.AddListener(i => session.Lobby.SetMatchDuration(Durations[i]));
                 ready = Action("TOGGLE READY",()=>session.Lobby.ToggleLocalReady());
                 start = Action("START GAME",session.StartMatch);
                 Note("Everyone, including the host, must be ready. The host starts the match."); Action("Leave room",()=>session.Leave());

@@ -22,6 +22,13 @@ namespace LaserTag.Menu
         public NetworkList<LobbyMember> Members;
         public NetworkVariable<FixedString32Bytes> Code = new NetworkVariable<FixedString32Bytes>();
         public NetworkVariable<int> Capacity = new NetworkVariable<int>(4);
+        public NetworkVariable<int> MatchDurationSeconds = new NetworkVariable<int>(300);
+        public void SetMatchDuration(int seconds)
+        {
+            if (!IsServer || !IsSpawned || Phase.Value != SessionPhase.Lobby) return;
+            if (seconds == 180 || seconds == 300 || seconds == 600 || seconds == 900)
+                MatchDurationSeconds.Value = seconds;
+        }
         public NetworkVariable<SessionPhase> Phase = new NetworkVariable<SessionPhase>();
         void Awake() { Members = new NetworkList<LobbyMember>(); }
         public override void OnNetworkSpawn()

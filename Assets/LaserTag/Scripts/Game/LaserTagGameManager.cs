@@ -57,6 +57,13 @@ public class LaserTagGameManager : NetworkBehaviour
 
     [Header("References")]
     public SpawnManager spawnManager;
+    [Header("Match duration (lobby overrides this when present)")]
+    [Min(1)] public int matchDurationSeconds = 300;
+    public NetworkVariable<double> MatchEndsAt = new NetworkVariable<double>();
+    public NetworkVariable<bool> TimeLimitExpired = new NetworkVariable<bool>();
+    public NetworkList<Vector3> HealthPickups;
+    void InitializePickups() { HealthPickups = new NetworkList<Vector3>(); }
+    public HealthPickupSystem PickupSystem { get; private set; }
 
     [Header("Input")]
     [Tooltip("Starts / restarts the round.")]
@@ -81,6 +88,10 @@ public class LaserTagGameManager : NetworkBehaviour
     void Awake()
     {
         Instance = this;
+        InitializePickups();
+        PickupSystem = GetComponent<HealthPickupSystem>();
+        if (!PickupSystem) PickupSystem = gameObject.AddComponent<HealthPickupSystem>();
+        if (!GetComponent<StarryNightSky>()) gameObject.AddComponent<StarryNightSky>();
         if (spawnManager == null) spawnManager = FindAnyObjectByType<SpawnManager>();
     }
 
@@ -268,6 +279,9 @@ public class LaserTagGameManager : NetworkBehaviour
         foreach (RelayCombatPlayer p in scratch) p.LifeState.Value = PlayerLifeState.Alive;
         roundParticipantCount=scratch.Count;
 
+        MatchEndsAt.Value = 0;
+        TimeLimitExpired.Value = false;
+        HealthPickups.Clear();
         RoundNumber.Value++;
         Phase.Value = GamePhase.Countdown;
         PhaseEndsAt.Value = ServerNow + startCountdown;
@@ -290,10 +304,24 @@ public class LaserTagGameManager : NetworkBehaviour
         switch (Phase.Value)
         {
             case GamePhase.Countdown:
-                if (ServerNow >= PhaseEndsAt.Value) Phase.Value = GamePhase.Playing;
+                if (ServerNow >= PhaseEndsAt.Value)
+                {
+                    var lobby = LaserTag.Menu.MenuSessionController.Instance?.Lobby;
+                    int duration = lobby ? lobby.MatchDurationSeconds.Value : matchDurationSeconds;
+                    MatchEndsAt.Value = ServerNow + Mathf.Clamp(duration, 1, 3600);
+                    Phase.Value = GamePhase.Playing;
+                }
                 break;
 
             case GamePhase.Playing:
+                if (ServerNow >= MatchEndsAt.Value)
+                {
+                    TimeLimitExpired.Value = true;
+                    Phase.Value = GamePhase.GameOver;
+                    HealthPickups.Clear();
+                    SystemMessageRpc(new FixedString64Bytes("TIME LIMIT - final standings"));
+                    break;
+                }
                 reserved.Clear();
                 foreach (RelayCombatPlayer p in RelayCombatPlayer.All)
                 {

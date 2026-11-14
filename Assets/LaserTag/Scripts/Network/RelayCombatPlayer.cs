@@ -207,6 +207,13 @@ public sealed class RelayCombatPlayer : NetworkBehaviour
     {
         LaserTagFeedback.PlayHitConfirm();if(PlayerHud.Instance){PlayerHud.Instance.ShowHitMarker();if(tagged&&target.TryGet(out var obj)&&obj.TryGetComponent<RelayCombatPlayer>(out var victim))PlayerHud.Instance.ShowKill(victim.Name);}
     }
+    [Rpc(SendTo.Owner, InvokePermission=RpcInvokePermission.Server)]
+    public void HealingFeedbackRpc(int amount)
+    {
+        if (PlayerHud.Instance) PlayerHud.Instance.AddSystemMessage("<color=#63FF98>+" + amount + " HP</color>");
+        LaserTagFeedback.PlayHeal();
+        LaserTagFeedback.Haptic(LaserTagFeedback.Hand.Right, .12f, .06f);
+    }
     static bool Finite(Vector3 value)=>!float.IsNaN(value.x)&&!float.IsNaN(value.y)&&!float.IsNaN(value.z)&&!float.IsInfinity(value.x)&&!float.IsInfinity(value.y)&&!float.IsInfinity(value.z);
     public void ServerTeleport(Vector3 feet,float yaw)
     {

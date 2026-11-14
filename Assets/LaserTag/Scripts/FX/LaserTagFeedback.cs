@@ -8,7 +8,7 @@ public static class LaserTagFeedback
 {
     public enum Hand { Left, Right, Both }
 
-    static AudioClip shot, empty, hitConfirm, hurt;
+    static AudioClip shot, empty, hitConfirm, hurt, heal;
     // Eight short voices cover overlapping shots without allocating an object
     // or searching the scene on every trigger press. Scene unload owns cleanup.
     static readonly AudioSource[] shotVoices = new AudioSource[8];
@@ -17,7 +17,7 @@ public static class LaserTagFeedback
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
     static void ResetStatics()
     {
-        shot = empty = hitConfirm = hurt = null;
+        shot = empty = hitConfirm = hurt = heal = null;
         System.Array.Clear(shotVoices,0,shotVoices.Length);
         nextShotVoice=0;
     }
@@ -92,6 +92,11 @@ public static class LaserTagFeedback
         Play(clip, cam != null ? cam.transform.position : Vector3.zero, volume, 0f);
     }
 
+    public static void PlayHeal()
+    {
+        if (!heal) heal = Make("Healing", .22f, (t,d) => .25f * Mathf.Sin(2*Mathf.PI*(600*t+900*t*t)) * Mathf.Sin(Mathf.PI*t/d));
+        Play2D(heal, .3f);
+    }
     static AudioClip Shot() => shot != null ? shot : shot = Make("Laser Shot", 0.16f, (t, d) =>
     {
         float k = t / d;

@@ -3210,6 +3210,8 @@ GameObject:
   - component: {fileID: 186476876}
   - component: {fileID: 186476879}
   - component: {fileID: 186476878}
+  - component: {fileID: 186476880}
+  - component: {fileID: 186476881}
   m_Layer: 0
   m_Name: Relay Match
   m_TagString: Untagged
@@ -7885,7 +7887,7 @@ Camera:
   m_GameObject: {fileID: 467642844}
   m_Enabled: 1
   serializedVersion: 2
-  m_ClearFlags: 2
+  m_ClearFlags: 1
   m_BackGroundColor: {r: 0.035, g: 0.055, b: 0.085, a: 1}
   m_projectionMatrixMode: 1
   m_GateFitMode: 2
@@ -36272,3 +36274,40 @@ SceneRoots:
   - {fileID: 186476877}
   - {fileID: 325411269}
   - {fileID: 249475658}
+--- !u!114 &186476880
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 186476875}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6b87d6c6bf7f4ada8d716f95b7849fa6, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Assembly-CSharp::HealthPickupSystem
+  maximumActivePickups: 3
+  healthRestored: 5
+  respawnInterval: 12
+  collectionRadius: 0.7
+  minimumSpacing: 3
+  minimumPlayerDistance: 2
+  orbSize: 0.18
+  glowColor: {r: 0.15, g: 1, b: 0.35, a: 1}
+  animate: 1
+--- !u!114 &186476881
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 186476875}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 62adc032c86749149960f38d66d672ec, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Assembly-CSharp::StarryNightSky
+  starCount: 2400
+  brightness: 0.8
+  ambientContribution: 0.003
+  seed: 297

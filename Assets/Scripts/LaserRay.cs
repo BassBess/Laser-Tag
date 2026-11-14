@@ -27,7 +27,7 @@ public class LaserRay : MonoBehaviour
 
     [Header("Ray")]
     [Tooltip("How far the laser reaches, in meters, if it doesn't hit anything.")]
-    public float maxDistance = 50f;
+    [Min(.1f)] public float maxDistance = 50f;
 
     [Tooltip("Which layers the laser can hit.")]
     public LayerMask hitLayers = ~0;
@@ -46,6 +46,9 @@ public class LaserRay : MonoBehaviour
     public bool showAimLaser = false;
     [Tooltip("Small local aiming dot instead of a continuous beam.")]
     public bool showAimDot = true;
+    [Min(.005f)] public float aimDotSize = .035f;
+    public Color aimDotColor = new Color(.35f, .85f, 1f, 1f);
+    [Range(0,1)] public float aimDotBrightness = .65f;
     [Tooltip("Width of the bright center line, in meters.")]
     public float aimCoreWidth = 0.004f;
     [Tooltip("Width of the soft red glow around it, in meters.")]
@@ -163,12 +166,14 @@ public class LaserRay : MonoBehaviour
     {
         Vector3 origin = muzzle.position;
         Vector3 direction = muzzle.forward;
+        var game = LaserTagGameManager.Instance;
+        float range = Mathf.Min(Mathf.Max(.1f, maxDistance), game ? game.maxShotRange : maxDistance);
 
-        int count = Physics.RaycastNonAlloc(origin, direction, rayHits, maxDistance,
+        int count = Physics.RaycastNonAlloc(origin, direction, rayHits, range,
                                             hitLayers, QueryTriggerInteraction.Collide);
 
         // Saturation is rare; retain the nearest cover rather than trust a truncated hit set.
-        var candidates = count == rayHits.Length ? Physics.RaycastAll(origin, direction, maxDistance, hitLayers, QueryTriggerInteraction.Collide) : rayHits;
+        var candidates = count == rayHits.Length ? Physics.RaycastAll(origin, direction, range, hitLayers, QueryTriggerInteraction.Collide) : rayHits;
         if (candidates != rayHits) count = candidates.Length;
         hasHit = false;
         float closest = float.MaxValue;
@@ -189,7 +194,7 @@ public class LaserRay : MonoBehaviour
             }
         }
 
-        rayEnd = hasHit ? currentHit.point : origin + direction * maxDistance;
+        rayEnd = hasHit ? currentHit.point : origin + direction * range;
     }
 
     // The trigger and tests share the same gate, cooldown and raycast path.
@@ -260,12 +265,17 @@ public class LaserRay : MonoBehaviour
             PlaceGlow(muzzleGlow, muzzleGlowMat, muzzle.position, muzzleGlowSize * (0.6f + 0.4f * shot), shot);
 
         // Glowing spot where the beam hits a surface.
-        bool showHit = showHitGlow && hasHit && (visible || showAimDot);
+        var me = RelayCombatPlayer.Local;
+        bool localAim = showAimDot && me && me.IsAlive && LocalPlayerRig.Instance &&
+            System.Array.IndexOf(LocalPlayerRig.Instance.guns, this) >= 0 &&
+            !LaserTag.Menu.MainMenuController.GameplayInputBlocked;
+        bool showHit = hasHit && ((showHitGlow && visible) || localAim);
         hitGlow.gameObject.SetActive(showHit);
         if (showHit)
         {
             Vector3 spot = currentHit.point + currentHit.normal * 0.01f;
-            PlaceGlow(hitGlow, hitGlowMat, spot, shot > .001f ? hitGlowSize * (0.5f + 0.5f * brightness) : .025f, shot > .001f ? brightness : .3f);
+            PlaceGlow(hitGlow, hitGlowMat, spot, shot > .001f ? hitGlowSize * (0.5f + 0.5f * brightness) : aimDotSize, shot > .001f ? brightness : aimDotBrightness);
+            if (shot <= .001f) hitGlowMat.color = WithAlpha(aimDotColor, aimDotBrightness);
         }
     }
 

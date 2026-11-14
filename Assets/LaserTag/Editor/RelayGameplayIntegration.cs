@@ -40,7 +40,7 @@ public static class RelayGameplayIntegration
         if(!session)throw new InvalidOperationException("Menu session controller is missing.");
         // Combat adds NetworkBehaviours to the registered actor. Reject old builds
         // cleanly rather than allowing peers with incompatible behaviour layouts.
-        session.Manager.NetworkConfig.ProtocolVersion=2;
+        session.Manager.NetworkConfig.ProtocolVersion=3;
         var lists=session.Manager.NetworkConfig.Prefabs.NetworkPrefabsLists;
         if(lists.Count!=1||!lists[0].Contains(session.LobbyPrefab)||!lists[0].Contains(session.Manager.NetworkConfig.PlayerPrefab))throw new InvalidOperationException("Existing menu registry is incomplete.");
         EditorSceneManager.MarkSceneDirty(main);EditorSceneManager.SaveScene(main);AssetDatabase.SaveAssets();
