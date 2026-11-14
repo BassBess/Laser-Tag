@@ -149,7 +149,7 @@ namespace LaserTag.Menu
             Note("One player chooses PLAY > HOST GAME and shares the six-character room code. Other players choose JOIN GAME and enter it, using the room-code keypad if needed. Choose five slots for the five-player session. Everyone, including the host, must toggle READY. Only the host starts the match; at least two players are needed for a round. Wait for loading and the three-second countdown before shooting.");
             Title("2 / TELEPORT, LOOK AND AIM");
             Note("Use the LEFT hand for teleporting. Push the left thumbstick forward to display the arc, aim at a clear floor area, then release the stick to request the teleport. Cyan marks a valid preview; red means it is blocked. A cyan preview is not approval: the server can reject the request if the destination becomes occupied before landing. Walls, cover, prop tops, unsupported edges, steep slopes, excessive height changes and other players block landings. Teleporting is unavailable while dead or while options are open.");
-            Note("Look and turn naturally with your headset, and aim with your RIGHT controller. Stay inside your own cleared physical play area with Quest boundaries enabled. Use teleporting to travel through the virtual arena. Do not physically walk through virtual cover or rely on boundary warnings to clear your room.");
+            Note("Look naturally with your headset. Flick the RIGHT thumbstick left/right to snap turn; release to centre before the next turn. Adjust the snap angle in Settings. Aim with your RIGHT controller. Stay inside your own cleared physical play area with Quest boundaries enabled. Use teleporting to travel through the virtual arena. Do not physically walk through virtual cover or rely on boundary warnings to clear your room.");
             Note("Every player has a different LED color on their suit. A small matching name tag above each opponent identifies them; walls and cover can hide it. Your own name tag is hidden from your view.");
             Title("3 / SHOOTING AND COVER");
             Note("Aim the right-hand gun and pull the RIGHT TRIGGER for one shot. Release and pull again; the default cooldown is 0.25 seconds. The left hand is reserved for teleporting. Shots reach up to 50 metres. Solid cover stops lasers. You cannot hit yourself. Both head and body hits deal 10 damage; head hits have no extra damage bonus. A confirmed hit marker and sound mean damage was accepted. A beam alone does not guarantee a hit.");
@@ -202,7 +202,7 @@ namespace LaserTag.Menu
         Button Action(string value,Action action)
         {
             var image=Image(value,content,new Color(.06f,.17f,.24f));var e=image.gameObject.AddComponent<LayoutElement>();e.minHeight=52;
-            var button=image.gameObject.AddComponent<Button>();var colors=button.colors;colors.normalColor=Color.white;colors.highlightedColor=new Color(.3f,.93f,1);colors.selectedColor=new Color(.4f,.82f,1);colors.pressedColor=new Color(.12f,.65f,.8f);button.colors=colors;
+            var button=image.gameObject.AddComponent<Button>();button.targetGraphic=image;var colors=button.colors;colors.normalColor=Color.white;colors.highlightedColor=new Color(.3f,.93f,1);colors.selectedColor=new Color(.4f,.82f,1);colors.pressedColor=new Color(.12f,.65f,.8f);button.colors=colors;
             var text=Label(image.transform,value,20,Color.white);Stretch(text.rectTransform);text.alignment=TextAnchor.MiddleCenter;
             button.onClick.AddListener(()=>{GetComponent<MenuAudio>().Click();action();});return button;
         }

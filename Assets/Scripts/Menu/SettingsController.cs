@@ -29,6 +29,7 @@ namespace LaserTag.Menu
         int defaultQuality;
         void Awake()
         {
+            SupportsSnapTurn=true; // RelayAvatarPlayer implements the active rig turn.
             defaultQuality=QualitySettings.GetQualityLevel();
             ResolutionSizes = Screen.resolutions.Select(r=>new Vector2Int(r.width,r.height)).Distinct().ToArray();
             if (ResolutionSizes.Length == 0) ResolutionSizes = new[]{new Vector2Int(Mathf.Max(640,Screen.width),Mathf.Max(480,Screen.height))};

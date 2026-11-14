@@ -9,8 +9,8 @@ using Unity.Netcode;
 [RequireComponent(typeof(NetworkObject), typeof(AvatarPoseDriver), typeof(ScoutAvatar))]
 public sealed class RelayAvatarPlayer : NetworkBehaviour
 {
-    // Version 4 adds the server-assigned player color to the combat snapshot.
-    public const ushort MovementProtocolVersion = 4;
+    // Version 5 adds authoritative snap-turn requests.
+    public const ushort MovementProtocolVersion = 5;
     // Retained serialized desktop settings; continuous translation stays disabled.
     public float speed = 2.2f, sprintMultiplier = 1.6f, turnSpeed = 100f, poseSendHz = 15f;
     [Header("Server tracking envelope (metres, relative to physical tracking origin)")]
@@ -67,6 +67,7 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
     double lastPoseAt, nextRequestAt, tokenAt, nextDiagnostic;
     float nextTeleportDiagnostic;
     float poseTokens = 3;
+    bool turnNeedsNeutral = true;
     public bool UseXRTracking { get; private set; }
     public bool TeleportPending => requestPending;
     public uint OriginRevision => state.Value.Revision;
@@ -135,6 +136,7 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
         // local transforms. Forged world transforms are never serialized.
         if(IsOwner && localRevision!=0 && LocalPlayerRig.Instance)
             LocalPlayerRig.Instance.ApplyApprovedOrigin(localOrigin,localYaw);
+        if(IsOwner)UpdateSnapTurnInput();
         if(!IsOwner && !IsServer)
             ApplyState(firstRemoteFrame || displayedRevision!=state.Value.Revision ? 1 : 1-Mathf.Exp(-13*Time.deltaTime));
         else if(IsOwner && !IsServer)
@@ -263,6 +265,61 @@ public sealed class RelayAvatarPlayer : NetworkBehaviour
         if(!Finite(q.x)||!Finite(q.y)||!Finite(q.z)||!Finite(q.w))return false;
         float norm=q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w;
         return Mathf.Abs(norm-1)<.01f;
+    }
+    void UpdateSnapTurnInput()
+    {
+        if(!Application.isFocused || LaserTag.Menu.MainMenuController.GameplayInputBlocked ||
+            !combat || combat.LifeState.Value==PlayerLifeState.Respawning || requestPending || !localBinding)
+        { turnNeedsNeutral=true;return; }
+        var device=UnityEngine.InputSystem.XR.XRController.rightHand;
+        var stick=device?.TryGetChildControl<UnityEngine.InputSystem.Controls.Vector2Control>("thumbstick")
+            ?? device?.TryGetChildControl<UnityEngine.InputSystem.Controls.Vector2Control>("primary2DAxis");
+        if(stick==null){turnNeedsNeutral=true;return;}
+        Vector2 value=stick.ReadValue();
+        if(value.magnitude<=.25f){turnNeedsNeutral=false;return;}
+        if(turnNeedsNeutral || Mathf.Abs(value.x)<.7f || Mathf.Abs(value.x)<Mathf.Abs(value.y))return;
+        turnNeedsNeutral=true;
+        var settings=LaserTag.Menu.MenuSessionController.Instance?.GetComponent<LaserTag.Menu.SettingsController>();
+        float angle=settings && settings.Current!=null?settings.Current.SnapAngle:45f;
+        RequestSnapTurn(Mathf.Sign(value.x)*Mathf.Clamp(angle,15,90));
+    }
+    public static void CalculateSnapTurn(Vector3 origin,float yaw,Vector3 eye,float angle,out Vector3 nextOrigin,out float nextYaw)
+    {
+        Vector3 pivot=origin+Quaternion.Euler(0,yaw,0)*Horizontal(eye);
+        nextOrigin=pivot+Quaternion.Euler(0,angle,0)*(origin-pivot);
+        nextYaw=Mathf.Repeat(yaw+angle,360);
+    }
+    public bool RequestSnapTurn(float angle)
+    {
+        if(!IsOwner || !IsSpawned || requestPending || localRevision==0 || !localBinding ||
+            !combat || combat.LifeState.Value==PlayerLifeState.Respawning || LaserTag.Menu.MainMenuController.GameplayInputBlocked ||
+            !Finite(angle) || Mathf.Abs(angle)<15 || Mathf.Abs(angle)>90)return false;
+        localBinding.ApplyPose();
+        requestPending=true;pendingRequest=++requestSequence;
+        var game=LaserTagGameManager.Instance;
+        RequestSnapTurnRpc(pendingRequest,localRevision,game?game.RoundNumber.Value:-1,angle,++poseSequence,Capture(localBinding));
+        return true;
+    }
+    [Rpc(SendTo.Server,InvokePermission=RpcInvokePermission.Owner)]
+    void RequestSnapTurnRpc(uint request,uint revision,int round,float angle,uint trackingSequence,TrackingPose tracking)
+    {
+        if(request<=serverRequestSequence)return;
+        serverRequestSequence=request;
+        double now=NetworkManager.ServerTime.Time;
+        if(now<nextRequestAt){RejectTeleport(request,ServerFeet,"Turn/rate limit");return;}
+        nextRequestAt=now+Mathf.Max(.1f,teleportRequestInterval);
+        var game=LaserTagGameManager.Instance;
+        if(revision!=state.Value.Revision || !game || round!=game.RoundNumber.Value ||
+            !combat || combat.LifeState.Value==PlayerLifeState.Respawning ||
+            !Finite(angle) || Mathf.Abs(angle)<15 || Mathf.Abs(angle)>90)
+        {RejectTeleport(request,ServerFeet,"Turn/unavailable or invalid request");return;}
+        Physics.SyncTransforms();
+        if(!TryAcceptTracking(trackingSequence,tracking,out var reason))
+        {RejectTeleport(request,ServerFeet,reason);return;}
+        var s=state.Value;Vector3 feet=ServerFeet;
+        CalculateSnapTurn(s.Origin,s.Yaw,s.Tracking.Eye,angle,out var origin,out var yaw);
+        SetServerOrigin(origin,yaw,feet);
+        TeleportResultRpc(request,true,"");
     }
     public bool RequestTeleport(Vector3 feet)
     {

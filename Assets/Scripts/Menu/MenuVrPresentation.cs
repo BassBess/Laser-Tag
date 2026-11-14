@@ -29,6 +29,9 @@ namespace LaserTag.Menu
         readonly List<Material> materials = new List<Material>();
         readonly List<Material> gameMaterials = new List<Material>();
         readonly List<InputAction> menuActions = new List<InputAction>(), gameActions = new List<InputAction>();
+        readonly Dictionary<XRRayInteractor,GameObject> pointerDots = new Dictionary<XRRayInteractor,GameObject>();
+        readonly List<XRRayInteractor> expiredPointers = new List<XRRayInteractor>();
+        readonly MaterialPropertyBlock pointerColor = new MaterialPropertyBlock();
         readonly List<XRDisplaySubsystem> displays = new List<XRDisplaySubsystem>();
         InputAction options;
         bool initialized, wasVisible;
@@ -84,6 +87,7 @@ namespace LaserTag.Menu
                 placementPending=true;placementFrames=3;
             }
             wasVisible=visible;
+            UpdatePointerDots();
         }
         void BeforeCamera(ScriptableRenderContext context,Camera camera)
         {
@@ -105,6 +109,8 @@ namespace LaserTag.Menu
             {old.enabled=false;Destroy(old);}
             events.gameObject.AddComponent<XRUIInputModule>();
             canvas.renderMode=RenderMode.WorldSpace;
+            // Only the tracked raycaster should hit this world-space VR canvas.
+            canvas.GetComponent<GraphicRaycaster>().enabled=false;
             canvas.gameObject.AddComponent<TrackedDeviceGraphicRaycaster>();
             var rect=(RectTransform)canvas.transform;
             rect.sizeDelta=new Vector2(1280,900);rect.localScale=Vector3.one*.0012f;
@@ -117,13 +123,13 @@ namespace LaserTag.Menu
             foreach(string hand in new[]{"LeftHand","RightHand"})
             {
                 var go=new GameObject(hand+" Menu Pointer");go.transform.SetParent(offset.transform,false);
-                Pose(go,"<XRController>{"+hand+"}","devicePosition","deviceRotation");
+                Pose(go,"<XRController>{"+hand+"}","pointerPosition","pointerRotation");
                 AddRay(go,hand);
             }
             root.SetActive(true);wasVisible=false;
         }
         InputAction Action(string name,InputActionType type,string binding,bool game=false)
-        {var action=new InputAction(name,type,binding);(game?gameActions:menuActions).Add(action);return action;}
+        {var action=new InputAction(name,type,binding);(game?gameActions:menuActions).Add(action);action.Enable();return action;}
         void Pose(GameObject go,string device,string position,string rotation)
         {
             var driver=go.AddComponent<TrackedPoseDriver>();
@@ -141,6 +147,8 @@ namespace LaserTag.Menu
         {
             var ray=go.AddComponent<XRRayInteractor>();ray.enableUIInteraction=true;ray.maxRaycastDistance=6;
             ray.interactionManager=uiManager;
+            ray.lineType=XRRayInteractor.LineType.StraightLine;
+            ray.rayOriginTransform=go.transform;
             ray.interactionLayers=0;
             ray.uiPressInput.inputSourceMode=XRInputButtonReader.InputSourceMode.InputAction;
             ray.uiPressInput.inputActionPerformed=Action("UI press",InputActionType.Button,"<XRController>{"+hand+"}/triggerPressed",game);
@@ -150,7 +158,38 @@ namespace LaserTag.Menu
             var line=go.AddComponent<LineRenderer>();line.widthMultiplier=.003f;line.positionCount=2;
             line.shadowCastingMode=UnityEngine.Rendering.ShadowCastingMode.Off;line.receiveShadows=false;
             var material=new Material(Shader.Find("Sprites/Default"));material.color=Color.cyan;(game?gameMaterials:materials).Add(material);line.sharedMaterial=material;
-            go.AddComponent<UnityEngine.XR.Interaction.Toolkit.Interactors.Visuals.XRInteractorLineVisual>();
+            var visual=go.AddComponent<UnityEngine.XR.Interaction.Toolkit.Interactors.Visuals.XRInteractorLineVisual>();
+            visual.overrideInteractorLineOrigin=false;visual.lineOriginTransform=go.transform;
+            visual.overrideInteractorLineLength=false;visual.lineBendRatio=1f;
+            visual.snapEndpointIfAvailable=false;visual.smoothMovement=false;
+            visual.lineWidth=.004f;visual.setLineColorGradient=true;
+            visual.validColorGradient=PointerGradient(Color.cyan);
+            visual.invalidColorGradient=PointerGradient(new Color(.15f,.7f,1));
+            var dot=GameObject.CreatePrimitive(PrimitiveType.Sphere);dot.name="Menu Aim Cursor";dot.layer=2;
+            dot.transform.SetParent(go.transform,false);dot.transform.localScale=Vector3.one*.014f;
+            var collider=dot.GetComponent<Collider>();collider.enabled=false;Destroy(collider);
+            var renderer=dot.GetComponent<Renderer>();renderer.sharedMaterial=material;renderer.shadowCastingMode=ShadowCastingMode.Off;renderer.receiveShadows=false;
+            dot.SetActive(false);pointerDots.Add(ray,dot);
+        }
+        static Gradient PointerGradient(Color color)
+        {
+            var gradient=new Gradient();gradient.SetKeys(new[]{new GradientColorKey(color,0),new GradientColorKey(color,1)},new[]{new GradientAlphaKey(1,0),new GradientAlphaKey(1,1)});return gradient;
+        }
+        void UpdatePointerDots()
+        {
+            expiredPointers.Clear();
+            foreach(var pair in pointerDots)
+            {
+                var ray=pair.Key;var dot=pair.Value;
+                if(!ray || !dot){expiredPointers.Add(ray);continue;}
+                bool visible=canvas.enabled && ray.isActiveAndEnabled;
+                if(!visible || !ray.TryGetCurrentUIRaycastResult(out var hit)){dot.SetActive(false);continue;}
+                dot.SetActive(true);dot.transform.position=hit.worldPosition-ray.transform.forward*.008f;
+                var selectable=hit.gameObject?hit.gameObject.GetComponentInParent<Selectable>():null;
+                pointerColor.SetColor("_Color",selectable && selectable.IsInteractable()?Color.white:Color.cyan);
+                dot.GetComponent<Renderer>().SetPropertyBlock(pointerColor);
+            }
+            foreach(var ray in expiredPointers)pointerDots.Remove(ray);
         }
         static void DisposeActions(List<InputAction> actions){foreach(var action in actions){action.Disable();action.Dispose();}actions.Clear();}
         void OnDestroy()
