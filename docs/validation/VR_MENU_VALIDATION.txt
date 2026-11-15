@@ -1,0 +1,50 @@
+Unity VR menu validation — 2026-11-15
+Unity 6000.6.2f1; isolated full project copy; simulated XR device events; no headset
+
+Editor runtime/tooling C# compilation: PASS
+Android-symbol runtime C# compilation: PASS (not an APK/IL2CPP build)
+Managed direction/repeat tests: PASS, 15 assertions
+git diff --check: PASS
+
+Play Mode behavior assertions: 31 passed
+PASS menu navigation: MainMenu started
+PASS menu navigation: XR navigation configured
+PASS menu navigation: MaterialPropertyBlock initialized in lifecycle
+PASS menu navigation: automatic initial focus
+PASS menu navigation: XR trigger runs real PLAY callback once while held
+PASS menu navigation: new panel selects first logical control
+PASS menu navigation: dropdown opens and focuses actual options
+PASS menu navigation: dropdown confirms real value and restores focus
+PASS menu navigation: down selects host
+PASS menu navigation: down selects code field
+PASS menu navigation: code field opens connected keypad
+PASS menu navigation: keypad right
+PASS menu navigation: keypad down
+PASS menu navigation: keypad up
+PASS menu navigation: keypad left
+PASS menu navigation: six-character entry through real key callbacks
+PASS menu navigation: backspace edits actual pending code
+PASS menu navigation: keypad JOIN retains existing validation
+PASS menu navigation: back restores previous code-field focus
+PASS menu navigation: settings first focus
+PASS menu navigation: slider updates real smooth-turn sensitivity
+PASS menu navigation: trigger toggles actual setting
+PASS menu navigation: focus automatically scrolls fully into view
+PASS menu navigation: APPLY saves actual settings
+PASS menu navigation: settings persist after reopening
+PASS menu navigation: tracked right ray retained
+PASS menu navigation: simulated ray motion takes ownership
+PASS menu navigation: ray trigger calls real callback exactly once
+PASS menu navigation: stick retakes ownership after ray
+PASS menu navigation: hidden control repairs focus
+PASS menu navigation: disabled component repairs focus
+
+Overall strict Console check: FAIL
+External Unity Editor startup exception:
+ArgumentOutOfRangeException: Index was out of range.
+UnityEditor.Search.SearchDatabase.EnumerateAll (SearchDatabase.cs:351)
+The final own assertion also logs a failure, producing 2 reported console errors.
+No MaterialPropertyBlock constructor error or XR subsystem null exception observed.
+
+Not tested: physical headsets, APK/IL2CPP, cloud joins/hosting, connected lobby,
+five-player gameplay, death/respawn/restart and returning from gameplay.

@@ -16,6 +16,7 @@ namespace LaserTag.Menu
 {
     // Adds XRI's existing tracked UI interaction to the menu. The gameplay rig,
     // controller input assets, tracked local poses and weapons are never replaced.
+    [DefaultExecutionOrder(-180)]
     public sealed class MenuVrPresentation : MonoBehaviour
     {
         MainMenuController controller;
@@ -31,10 +32,11 @@ namespace LaserTag.Menu
         readonly List<InputAction> menuActions = new List<InputAction>(), gameActions = new List<InputAction>();
         readonly Dictionary<XRRayInteractor,GameObject> pointerDots = new Dictionary<XRRayInteractor,GameObject>();
         readonly List<XRRayInteractor> expiredPointers = new List<XRRayInteractor>();
-        readonly MaterialPropertyBlock pointerColor = new MaterialPropertyBlock();
-        readonly List<XRDisplaySubsystem> displays = new List<XRDisplaySubsystem>();
+        MaterialPropertyBlock pointerColor;
+        MenuAnalogNavigation navigation;
+        void Awake() { pointerColor = new MaterialPropertyBlock(); }
         InputAction options;
-        bool initialized, wasVisible;
+        bool initialized, wasVisible, nativeDisplayWasActive;
         bool placementPending;
         int placementFrames;
         public bool OpenPressedThisFrame => options != null && options.WasPressedThisFrame();
@@ -42,14 +44,19 @@ namespace LaserTag.Menu
         public void Configure(MainMenuController owner, Canvas view, EventSystem eventSystem, Camera camera)
         {
             controller=owner;canvas=view;events=eventSystem;menuCamera=camera;
+            navigation=gameObject.AddComponent<MenuAnalogNavigation>();
+            navigation.Configure(view,eventSystem);
             options=new InputAction("Session options",InputActionType.Button,"<XRController>{LeftHand}/menuButton");
             options.Enable();
             RenderPipelineManager.beginCameraRendering+=BeforeCamera;
         }
-        bool DisplayRunning()
+        bool XRAvailable()
         {
-            SubsystemManager.GetSubsystems(displays);
-            foreach(var display in displays)if(display.running)return true;
+            // A simulator supplies input devices without a native display subsystem.
+            // XRSettings is safe before the OpenXR loader has completed startup.
+            if (XRSettings.isDeviceActive) return true;
+            foreach (var device in InputSystem.devices)
+                if (device is UnityEngine.InputSystem.XR.XRController) return true;
             return false;
         }
         void Update()
@@ -58,9 +65,12 @@ namespace LaserTag.Menu
             if(OpenPressedThisFrame)controller.ToggleOptions();
             if(!initialized)
             {
-                if(!DisplayRunning())return;
+                if(!XRAvailable())return;
                 Initialize();
             }
+            bool nativeDisplay=XRSettings.isDeviceActive;
+            if(nativeDisplay && !nativeDisplayWasActive){placementPending=true;placementFrames=3;}
+            nativeDisplayWasActive=nativeDisplay;
             bool menu=SceneManager.GetActiveScene().name==MenuSessionController.MenuScene;
             if(menuOrigin)menuOrigin.gameObject.SetActive(menu);
             // Unity treats destroyed objects as null; CLR identity also detects
@@ -87,17 +97,30 @@ namespace LaserTag.Menu
                 placementPending=true;placementFrames=3;
             }
             wasVisible=visible;
+            UpdateRayInput();
             UpdatePointerDots();
         }
         void BeforeCamera(ScriptableRenderContext context,Camera camera)
         {
             if(!isActiveAndEnabled || !initialized || !placementPending || !canvas || !canvas.enabled || canvas.worldCamera!=camera)return;
-            if(menuOrigin && camera==menuCamera && menuOrigin.CurrentTrackingOriginMode==TrackingOriginModeFlags.Unknown)return;
+            if(XRSettings.isDeviceActive && menuOrigin && camera==menuCamera && menuOrigin.CurrentTrackingOriginMode==TrackingOriginModeFlags.Unknown)return;
             // The camera's tracked pose is applied after Update. Place the panel
             // at rendering time, and wait for actual tracking on the menu origin.
             var driver=camera.GetComponent<TrackedPoseDriver>();
             if(driver && driver.trackingStateInput.action!=null &&
                 (driver.trackingStateInput.action.ReadValue<int>()&3)!=3)return;
+            PlaceCanvas(camera);
+        }
+        void LateUpdate()
+        {
+            // Simulated controllers do not imply an XR display (or a rendered Game
+            // view in batch tests). Give their menu a valid camera-relative pose
+            // after tracked Update, while native XR keeps render-time placement.
+            if(!XRSettings.isDeviceActive && initialized && placementPending && canvas && canvas.enabled && canvas.worldCamera)
+                PlaceCanvas(canvas.worldCamera);
+        }
+        void PlaceCanvas(Camera camera)
+        {
             canvas.transform.SetPositionAndRotation(camera.transform.position+camera.transform.forward*1.8f,camera.transform.rotation);
             placementPending=--placementFrames>0;
         }
@@ -107,7 +130,8 @@ namespace LaserTag.Menu
             uiManager=gameObject.AddComponent<UnityEngine.XR.Interaction.Toolkit.XRInteractionManager>();
             if(events.TryGetComponent<UnityEngine.InputSystem.UI.InputSystemUIInputModule>(out var old))
             {old.enabled=false;Destroy(old);}
-            events.gameObject.AddComponent<XRUIInputModule>();
+            var module=events.gameObject.AddComponent<XRUIInputModule>();
+            module.enableBuiltinActionsAsFallback=false;module.enableGamepadInput=false;module.enableJoystickInput=false;
             canvas.renderMode=RenderMode.WorldSpace;
             // Only the tracked raycaster should hit this world-space VR canvas.
             canvas.GetComponent<GraphicRaycaster>().enabled=false;
@@ -133,9 +157,23 @@ namespace LaserTag.Menu
         void Pose(GameObject go,string device,string position,string rotation)
         {
             var driver=go.AddComponent<TrackedPoseDriver>();
-            driver.positionInput=new InputActionProperty(Action("UI position",InputActionType.Value,device+"/"+position));
-            driver.rotationInput=new InputActionProperty(Action("UI rotation",InputActionType.Value,device+"/"+rotation));
+            driver.positionInput=new InputActionProperty(PoseAction(device,position,false));
+            driver.rotationInput=new InputActionProperty(PoseAction(device,rotation,true));
             driver.trackingStateInput=new InputActionProperty(Action("UI tracking",InputActionType.Value,device+"/trackingState"));
+        }
+        InputAction PoseAction(string device,string control,bool rotation)
+        {
+            var action=new InputAction("UI "+control,InputActionType.Value);
+            if(control=="pointerPosition" || control=="pointerRotation")
+            {
+                // Same XRI fallback composite as the Starter Assets: prefer OpenXR
+                // aim pose, fall back to the simulated controller's device pose.
+                action.AddCompositeBinding(rotation?"QuaternionFallback":"Vector3Fallback")
+                    .With("first",device+"/"+control)
+                    .With("second",device+(rotation?"/deviceRotation":"/devicePosition"));
+            }
+            else action.AddBinding(device+"/"+control);
+            menuActions.Add(action);action.Enable();return action;
         }
         void AddGameRay(Transform parent,string hand)
         {
@@ -150,11 +188,8 @@ namespace LaserTag.Menu
             ray.lineType=XRRayInteractor.LineType.StraightLine;
             ray.rayOriginTransform=go.transform;
             ray.interactionLayers=0;
-            ray.uiPressInput.inputSourceMode=XRInputButtonReader.InputSourceMode.InputAction;
-            ray.uiPressInput.inputActionPerformed=Action("UI press",InputActionType.Button,"<XRController>{"+hand+"}/triggerPressed",game);
-            ray.uiPressInput.inputActionValue=Action("UI pressure",InputActionType.Value,"<XRController>{"+hand+"}/trigger",game);
-            ray.uiScrollInput.inputSourceMode=XRInputValueReader.InputSourceMode.InputAction;
-            ray.uiScrollInput.inputAction=Action("UI scroll",InputActionType.Value,"<XRController>{"+hand+"}/primary2DAxis",game);
+            // Navigation and the right ray share one physical trigger and one owner.
+            ray.uiPressInput.inputSourceMode=XRInputButtonReader.InputSourceMode.ManualValue;
             var line=go.AddComponent<LineRenderer>();line.widthMultiplier=.003f;line.positionCount=2;
             line.shadowCastingMode=UnityEngine.Rendering.ShadowCastingMode.Off;line.receiveShadows=false;
             var material=new Material(Shader.Find("Sprites/Default"));material.color=Color.cyan;(game?gameMaterials:materials).Add(material);line.sharedMaterial=material;
@@ -170,6 +205,26 @@ namespace LaserTag.Menu
             var collider=dot.GetComponent<Collider>();collider.enabled=false;Destroy(collider);
             var renderer=dot.GetComponent<Renderer>();renderer.sharedMaterial=material;renderer.shadowCastingMode=ShadowCastingMode.Off;renderer.receiveShadows=false;
             dot.SetActive(false);pointerDots.Add(ray,dot);
+        }
+        readonly Dictionary<XRRayInteractor, bool> rayPressed = new Dictionary<XRRayInteractor, bool>();
+        void UpdateRayInput()
+        {
+            foreach(var pair in pointerDots)
+            {
+                var ray=pair.Key;
+                if(!ray)continue;
+                bool right=ray.name.StartsWith("RightHand");
+                if(ray.isActiveAndEnabled && canvas.enabled)
+                    navigation.ObserveRay(ray);
+                bool pressed=ray.isActiveAndEnabled && canvas.enabled &&
+                    !navigation.AnalogOwnsInput && (right?navigation.TriggerHeld:navigation.LeftRayHeld);
+                bool previous=rayPressed.TryGetValue(ray,out var value) && value;
+                ray.uiPressInput.manualPerformed=pressed;
+                ray.uiPressInput.manualValue=pressed?1:0;
+                if(pressed && !previous)ray.uiPressInput.manualFramePerformed=Time.frameCount;
+                if(!pressed && previous)ray.uiPressInput.manualFrameCompleted=Time.frameCount;
+                rayPressed[ray]=pressed;
+            }
         }
         static Gradient PointerGradient(Color color)
         {
@@ -189,7 +244,7 @@ namespace LaserTag.Menu
                 pointerColor.SetColor("_Color",selectable && selectable.IsInteractable()?Color.white:Color.cyan);
                 dot.GetComponent<Renderer>().SetPropertyBlock(pointerColor);
             }
-            foreach(var ray in expiredPointers)pointerDots.Remove(ray);
+            foreach(var ray in expiredPointers){pointerDots.Remove(ray);rayPressed.Remove(ray);}
         }
         static void DisposeActions(List<InputAction> actions){foreach(var action in actions){action.Disable();action.Dispose();}actions.Clear();}
         void OnDestroy()

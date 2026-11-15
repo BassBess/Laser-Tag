@@ -13,9 +13,10 @@ namespace LaserTag.Menu
     {
         public static MainMenuController Instance { get; private set; }
         public static bool GameplayInputBlocked => Instance && Instance.session && Instance.session.InGame &&
-            (Instance.panel != "Game" || (Instance.vrPresentation && Instance.vrPresentation.OpenPressedThisFrame) ||
+            (Instance.panel != "Game" || (Instance.analogNavigation && Instance.analogNavigation.GameplayReleasePending) || (Instance.vrPresentation && Instance.vrPresentation.OpenPressedThisFrame) ||
              (Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame));
         MenuVrPresentation vrPresentation;
+        MenuAnalogNavigation analogNavigation;
         public bool OptionsOpen => session && session.InGame && panel != "Game";
         string settingsReturnPage = "Home", pendingJoinCode = "";
         string helpReturnPage = "Home";
@@ -70,6 +71,7 @@ namespace LaserTag.Menu
             var events = new GameObject("Menu EventSystem",typeof(EventSystem),typeof(InputSystemUIInputModule)); events.transform.SetParent(transform,false); events.GetComponent<InputSystemUIInputModule>().AssignDefaultActions();
             vrPresentation=gameObject.AddComponent<MenuVrPresentation>();
             vrPresentation.Configure(this,canvas,events.GetComponent<EventSystem>(),MenuCamera);
+            analogNavigation=GetComponent<MenuAnalogNavigation>();
             Show("Home");
         }
         void Update()
@@ -89,7 +91,7 @@ namespace LaserTag.Menu
             status.text = Time.unscaledTime<noticeUntil?uiNotice:session.Status;
             if (session.Connecting) status.text = session.Status + new string('.', (int)(Time.unscaledTime*2)%4);
             foreach(var button in content.GetComponentsInChildren<Button>())
-                if (button.name != "Cancel connection" && button.name != "Leave room" && button.name != "Return to menu") button.interactable = !session.Connecting && !session.Leaving;
+                if (!button.GetComponentInParent<HelpInstructionViewer>() && button.name != "Cancel connection" && button.name != "Leave room" && button.name != "Return to menu") button.interactable = !session.Connecting && !session.Leaving;
             if (session.Lobby && panel == "Lobby")
             {
                 var state = session.Lobby; roomCode.text = "ROOM  " + state.Code.Value;
@@ -106,6 +108,7 @@ namespace LaserTag.Menu
         }
         void Show(string page)
         {
+            analogNavigation?.ChangePage(page);
             panel = page; fade = 0;
             foreach (Transform child in content) { child.gameObject.SetActive(false); Destroy(child.gameObject); }
             content.anchoredPosition = Vector2.zero;
@@ -117,7 +120,7 @@ namespace LaserTag.Menu
                 capacity = Choice("Maximum players (including host)",Enumerable.Range(2,7).Select(x=>x.ToString()).ToArray(),3);
                 Action("HOST GAME",()=>session.Host(capacity.value+2));
                 joinCode = Field("Room code", "ABC123"); joinCode.text=pendingJoinCode;
-                Action("ROOM CODE KEYPAD",()=>{pendingJoinCode=joinCode.text;Show("CodePad");});
+                Action("ROOM CODE KEYPAD",OpenCodePad);
                 Action("JOIN GAME",()=>session.Join(joinCode.text));
                 Action("Cancel connection",()=>session.Leave("Connection cancelled.")); Action("BACK",()=>Show("Home"));
             }
@@ -143,34 +146,33 @@ namespace LaserTag.Menu
         void OpenHelp(string back) { helpReturnPage=back;Show(back=="Pause"?"GameHelp":"Help"); }
         void BuildHelp()
         {
-            Title("HOW TO PLAY");Action("BACK",()=>Show(helpReturnPage));
-            Note("VR controls and default match rules. Scroll for all topics. The host's configured rules apply to everyone.");
-            Title("1 / JOIN THE MATCH");
-            Note("One player chooses PLAY > HOST GAME and shares the six-character room code. Other players choose JOIN GAME and enter it, using the room-code keypad if needed. Choose five slots for the five-player session. Everyone, including the host, must toggle READY. Only the host starts the match; at least two players are needed for a round. Wait for loading and the three-second countdown before shooting.");
-            Title("2 / TELEPORT, LOOK AND AIM");
-            Note("Use the LEFT hand for teleporting. Push the left thumbstick forward to display the arc, aim at a clear floor area, then release the stick to request the teleport. You have 15 teleports per burst; 2.5 seconds after the last successful teleport restores the burst, including when exhausted. Cyan marks a valid preview; red means it is blocked. A cyan preview is not approval: the server can reject the request if the destination becomes occupied before landing. Walls, cover, prop tops, unsupported edges, steep slopes, excessive height changes and other players block landings. Teleporting is unavailable while dead or while options are open.");
-            Note("Look naturally with your headset. Push the RIGHT thumbstick left/right to turn smoothly. Adjust Turn Sensitivity in Settings. Aim with your RIGHT controller. Stay inside your own cleared physical play area with Quest boundaries enabled. Use teleporting to travel through the virtual arena. Do not physically walk through virtual cover or rely on boundary warnings to clear your room.");
-            Note("Every player has a different LED color on their suit. A small matching name tag above each opponent identifies them; walls and cover can hide it. Your own name tag is hidden from your view.");
-            Title("3 / SHOOTING AND COVER");
-            Note("Aim the right-hand gun and pull the RIGHT TRIGGER for one shot. Release and pull again; the default cooldown is 0.25 seconds. The left hand is reserved for teleporting. Shots reach up to 50 metres. Solid cover stops lasers. You cannot hit yourself. Both head and body hits deal 10 damage; head hits have no extra damage bonus. A confirmed hit marker and sound mean damage was accepted. A beam alone does not guarantee a hit.");
-            Title("4 / AMMUNITION AND HEALTH");
-            Note("Start with 100 ammunition and 100 health. Each accepted shot costs one ammo. After two seconds without an accepted shot, ammo regenerates at eight shots per second, up to 100. There is no manual reload. Low ammo is highlighted; an empty gun clicks and cannot shoot. Empty trigger pulls do not postpone regeneration. Watch your health and ammo HUD, and move behind cover when under fire.");
-            Title("5 / LIVES AND RESPAWNING");
-            Note("Each player has two lives. At zero health you are tagged out and lose one life. After the first tag-out, wait three seconds to respawn at a clear, unoccupied spawn point with full health and ammo. If all spawns are blocked, respawning waits for space instead of placing you inside cover. You have two seconds of spawn protection; landing a validated hit ends your protection early. Shooting and teleporting are blocked while waiting to respawn. Losing your final life eliminates you until the next round.");
-            Title("6 / SCORING, WINNING AND RESTART");
-            Note("The last remaining player wins. The scoreboard shows finishing rank, kills, hits and deaths. Surviving longer ranks first; ties use more kills, then more hits, then fewer deaths. Tagging a player out counts as a kill, including a tag-out followed by a respawn. At game over, press the RIGHT controller A button to request a restart. A new round resets health, ammo, lives and round statistics. At least two connected players are required to restart.");
-            Title("7 / OPTIONS AND LEAVING");
-            Note("Use the left controller menu button to open session options. Point a controller ray at a button and use its trigger to select; use the thumbstick to scroll. Settings control master volume, music/ambience, sound effects, mute and graphics. The match keeps running while your options or help are open, but your firing and teleport inputs are blocked. Choose RESUME to return. RETURN TO MENU disconnects you. If the host leaves, the room closes for everyone; host or join a new room to play again. New players cannot join a match after loading starts.");
-            Action("BACK",()=>Show(helpReturnPage));
+            Title("HOW TO PLAY");var back=Action("BACK",()=>Show(helpReturnPage));
+            var image=Image("Instruction viewer",content,new Color(.04f,.12f,.19f));
+            image.gameObject.AddComponent<LayoutElement>().minHeight=360;
+            var viewer=image.gameObject.AddComponent<HelpInstructionViewer>();viewer.targetGraphic=image;
+            var colors=viewer.colors;colors.selectedColor=new Color(.65f,.95f,1);viewer.colors=colors;
+            var heading=Label(image.transform,"",26,cyan);Place(heading.rectTransform,.04f,.80f,.96f,.96f);
+            var body=Label(image.transform,"",22,new Color(.85f,.92f,.97f));Place(body.rectTransform,.04f,.24f,.96f,.78f);
+            body.alignment=TextAnchor.UpperLeft;body.verticalOverflow=VerticalWrapMode.Truncate;
+            var indicator=Label(image.transform,"",22,cyan);Place(indicator.rectTransform,.36f,.12f,.64f,.23f);indicator.alignment=TextAnchor.MiddleCenter;
+            var hint=Label(image.transform,"LEFT STICK  ◀ ▶  TO CHANGE PAGE",16,new Color(.55f,.78f,.85f));
+            Place(hint.rectTransform,.04f,.02f,.96f,.11f);hint.alignment=TextAnchor.MiddleCenter;
+            var previous=Action("◀",()=>{});previous.name="Previous instruction";previous.transform.SetParent(image.transform,false);
+            Place((RectTransform)previous.transform,.04f,.12f,.20f,.23f);
+            var next=Action("▶",()=>{});next.name="Next instruction";next.transform.SetParent(image.transform,false);
+            Place((RectTransform)next.transform,.80f,.12f,.96f,.23f);
+            viewer.Configure(back,heading,body,indicator,previous,next);
+            analogNavigation.SetHelpViewer(viewer);
         }
+        public void OpenCodePad() { if(joinCode)pendingJoinCode=joinCode.text.ToUpperInvariant();Show("CodePad"); }
         void BuildCodePad()
         {
-            Title("ROOM CODE");var display=Note(pendingJoinCode);Note("Select six letters or digits, then DONE.");
+            Title("ROOM CODE");var display=Note(pendingJoinCode);Note("Select six letters or digits, then JOIN or DONE.");
             var grid=new GameObject("Code keys",typeof(RectTransform),typeof(GridLayoutGroup),typeof(LayoutElement));grid.transform.SetParent(content,false);
             var layout=grid.GetComponent<GridLayoutGroup>();layout.cellSize=new Vector2(70,44);layout.spacing=new Vector2(8,8);layout.constraint=GridLayoutGroup.Constraint.FixedColumnCount;layout.constraintCount=6;
             grid.GetComponent<LayoutElement>().minHeight=304;
             foreach(char c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") { char key=c;var button=Action(key.ToString(),()=>{if(pendingJoinCode.Length<6)pendingJoinCode+=key;display.text=pendingJoinCode;});button.transform.SetParent(grid.transform,false); }
-            Action("BACKSPACE",()=>{if(pendingJoinCode.Length>0)pendingJoinCode=pendingJoinCode.Substring(0,pendingJoinCode.Length-1);display.text=pendingJoinCode;});Action("DONE",()=>Show("Play"));
+            Action("BACKSPACE",()=>{if(pendingJoinCode.Length>0)pendingJoinCode=pendingJoinCode.Substring(0,pendingJoinCode.Length-1);display.text=pendingJoinCode;});Action("DONE",()=>Show("Play"));Action("JOIN",()=>session.Join(pendingJoinCode));Action("CANCEL",()=>Show("Play"));
         }
         void BuildSettings()
         {

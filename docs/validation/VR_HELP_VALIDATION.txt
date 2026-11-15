@@ -1,0 +1,79 @@
+Paginated Help validation — Unity 6000.6.2f1 — 2026-11-15
+Isolated project copy; existing XR simulated controller device states; no headset
+
+Editor runtime and tooling compilation: PASS (including native Unity compilation)
+Android-symbol runtime compilation: PASS (not an APK/IL2CPP build)
+Managed direction/repeat assertions: 15 PASS
+Play Mode behavior assertions: 62 PASS
+
+PASS menu navigation: MainMenu started
+PASS menu navigation: XR navigation configured
+PASS menu navigation: MaterialPropertyBlock initialized in lifecycle
+PASS menu navigation: automatic initial focus
+PASS menu navigation: XR trigger runs real PLAY callback once while held
+PASS menu navigation: new panel selects first logical control
+PASS menu navigation: dropdown opens and focuses actual options
+PASS menu navigation: dropdown confirms real value and restores focus
+PASS menu navigation: down selects host
+PASS menu navigation: down selects code field
+PASS menu navigation: code field opens connected keypad
+PASS menu navigation: keypad right
+PASS menu navigation: keypad down
+PASS menu navigation: keypad up
+PASS menu navigation: keypad left
+PASS menu navigation: six-character entry through real key callbacks
+PASS menu navigation: backspace edits actual pending code
+PASS menu navigation: keypad JOIN retains existing validation
+PASS menu navigation: back restores previous code-field focus
+PASS menu navigation: settings first focus
+PASS menu navigation: slider updates real smooth-turn sensitivity
+PASS menu navigation: trigger toggles actual setting
+PASS menu navigation: focus automatically scrolls fully into view
+PASS menu navigation: APPLY saves actual settings
+PASS menu navigation: settings persist after reopening
+PASS menu navigation: tracked right ray retained
+PASS menu navigation: simulated ray motion takes ownership
+PASS menu navigation: ray trigger calls real callback exactly once
+PASS menu navigation: Help opening immediately focuses the first instruction
+PASS menu navigation: stick retakes ownership after ray
+PASS menu navigation: Help defaults to instruction card on page one
+PASS menu navigation: Help left boundary does not wrap
+PASS menu navigation: Help right flick advances exactly one page
+PASS menu navigation: Help left flick returns exactly one page
+PASS menu navigation: Help up selects Back
+PASS menu navigation: Help down returns to instruction card
+PASS menu navigation: Help card and Back fully visible together without scrolling
+PASS menu navigation: Help page 1 displays correct title/text/indicator without clipping
+PASS menu navigation: Help page 2 displays correct title/text/indicator without clipping
+PASS menu navigation: Help page 3 displays correct title/text/indicator without clipping
+PASS menu navigation: Help page 4 displays correct title/text/indicator without clipping
+PASS menu navigation: Help page 5 displays correct title/text/indicator without clipping
+PASS menu navigation: Help page 6 displays correct title/text/indicator without clipping
+PASS menu navigation: Help page 7 displays correct title/text/indicator without clipping
+PASS menu navigation: Help page 8 displays correct title/text/indicator without clipping
+PASS menu navigation: Help page 9 displays correct title/text/indicator without clipping
+PASS menu navigation: Help page 10 displays correct title/text/indicator without clipping
+PASS menu navigation: Help page 11 displays correct title/text/indicator without clipping
+PASS menu navigation: Help page 12 displays correct title/text/indicator without clipping
+PASS menu navigation: Help page 13 displays correct title/text/indicator without clipping
+PASS menu navigation: Help page 14 displays correct title/text/indicator without clipping
+PASS menu navigation: Help page 15 displays correct title/text/indicator without clipping
+PASS menu navigation: Help page 16 displays correct title/text/indicator without clipping
+PASS menu navigation: Help page 17 displays correct title/text/indicator without clipping
+PASS menu navigation: Help page 18 displays correct title/text/indicator without clipping
+PASS menu navigation: Help page 19 displays correct title/text/indicator without clipping
+PASS menu navigation: Help page 20 displays correct title/text/indicator without clipping
+PASS menu navigation: Help right boundary does not wrap
+PASS menu navigation: Help trigger on Back restores previous menu focus
+PASS menu navigation: ordinary menu navigation restored after Help
+PASS menu navigation: hidden control repairs focus
+PASS menu navigation: disabled component repairs focus
+
+Strict full Console check: FAIL on the previously documented Editor Search error:
+ArgumentOutOfRangeException in UnityEditor.Search.SearchDatabase.EnumerateAll.
+Two reported errors: the Editor indexing exception and the strict test assertion itself.
+No new menu exceptions or either original MenuVrPresentation exception observed.
+
+Full local log: /tmp/help-playmode-final.log
+Compiler logs: /tmp/help-editor-compile.log, /tmp/help-android-compile.log, /tmp/help-tools-compile.log
+Physical Quest readability and connected in-match Help return remain manual checks.
